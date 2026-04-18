@@ -511,6 +511,17 @@ async function loadDoc() {
     state.kdf = await makeLocalKdf();
     state.doc.kdf = state.kdf;
     ensureInitialTabExists();
+  } else if (!res.ok) {
+    let payload = null;
+    try {
+      payload = await res.json();
+    } catch {
+      // ignore malformed error payloads
+    }
+    if (res.status === 400 && payload?.error === "Invalid document id") {
+      throw new Error("Invalid document id");
+    }
+    throw new Error(payload?.error || `Failed to load document metadata (${res.status})`);
   } else {
     const data = await res.json();
     state.docExists = true;
@@ -824,6 +835,7 @@ async function connectWs() {
     };
 
     ws.onmessage = async (ev) => {
+      if (state.ws !== ws) return;
       const msg = JSON.parse(ev.data);
 
       if (msg.type === "authOk") {
@@ -1371,5 +1383,5 @@ loadDoc()
   .then(() => lockUI(!canEdit()))
   .catch((err) => {
     console.error(err);
-    setStatus("Failed to load document.", "status-err");
+    setStatus(err?.message || "Failed to load document.", "status-err");
   });
