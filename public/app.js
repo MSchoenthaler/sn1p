@@ -2,7 +2,7 @@
 const $ = (s) => document.querySelector(s);
 
 const DOC = (location.pathname.split("/").filter(Boolean).pop() || "default").toLowerCase();
-document.title = `sn1p - ${DOC}`;
+document.title = `${DOC} - sn1p`;
 $("#doc-name").textContent = `/${DOC}`;
 
 const editor = $("#editor");
