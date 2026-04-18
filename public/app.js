@@ -342,8 +342,12 @@ function getTabText(tabId) {
   return state.tabs.get(tabId)?.text || "";
 }
 
+function normalizePersistedText(text) {
+  return text === "\n" || text === "\r\n" ? "" : text;
+}
+
 function isTabEmpty(tabId) {
-  return getTabText(tabId) === "";
+  return normalizePersistedText(getTabText(tabId)) === "";
 }
 
 function shouldKeepServerDoc() {
@@ -366,7 +370,7 @@ function getTabIdsForSync(preferTabId = null) {
 
 async function buildEncryptedTabEntry(tabId, key = state.key, textOverride) {
   const tab = ensureLocalTabState(tabId, {});
-  const text = textOverride !== undefined ? textOverride : getTabText(tabId);
+  const text = normalizePersistedText(textOverride !== undefined ? textOverride : getTabText(tabId));
   const entry = await encryptLabel(tab.name, key);
   entry.ts = Date.now();
   if (text !== "") {
