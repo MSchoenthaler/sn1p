@@ -300,9 +300,11 @@ button:disabled {
   color: var(--text-body);
   border: 1px solid var(--tab-input-border);
   border-radius: 0.35rem;
-  padding: 0.08rem 0.35rem;
-  line-height: 1.2;
-  font: inherit;
+  padding: 0 0.35rem;
+  font-size: 0.92rem;
+  line-height: 1.1;
+  font-family: inherit;
+  font-weight: inherit;
   margin: 0;
   outline: none;
 }
