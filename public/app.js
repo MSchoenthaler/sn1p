@@ -8,6 +8,7 @@ $("#doc-name").textContent = `/${DOC}`;
 const editor = $("#editor");
 const printable = $("#printable");
 const wrapToggleBtn = $("#wrap-toggle");
+const themeToggleBtn = $("#theme-toggle");
 const passwordInput = $("#password");
 const unlockBtn = $("#unlock-btn");
 const newPasswordInput = $("#new-password");
@@ -35,6 +36,25 @@ const DELETE_CONFIRM_ICON = `
   <path fill="currentColor" d="m20.37 8.91l-1 1.73l-12.13-7l1-1.73l3.04 1.75l1.36-.37l4.33 2.5l.37 1.37zM6 19V7h5.07L18 11v8a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2" />
 </svg>`;
 const WRAP_STORAGE_KEY = "sn1p-wrap-enabled";
+const THEME_STORAGE_KEY = "sn1p-theme";
+const WRAP_ICON = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+  <path fill="currentColor" d="M14.7 20.7L11 17l3.7-3.7l1.4 1.45L14.85 16h2.4q.725 0 1.238-.513T19 14.25t-.513-1.237t-1.237-.513H4v-2h13.25q1.575 0 2.663 1.088T21 14.25t-1.088 2.663T17.25 18h-2.4l1.25 1.25zM4 18v-2h5v2zM4 7V5h16v2z" />
+</svg>`;
+const THEME_LIGHT_ICON = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+  <g fill="none" stroke="currentColor" stroke-width="2">
+    <circle cx="12" cy="12" r="4" stroke-linejoin="round" />
+    <path stroke-linecap="round" d="M20 12h1M3 12h1m8 8v1m0-18v1m5.657 13.657l.707.707M5.636 5.636l.707.707m0 11.314l-.707.707M18.364 5.636l-.707.707" />
+  </g>
+</svg>`;
+const THEME_DARK_ICON = `
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
+  <g fill="none">
+    <path d="M20.539 14.852A8 8 0 0 1 11 7c0-1.457.32-2.823 1-4a9 9 0 1 0 8.539 11.852" />
+    <path stroke="currentColor" stroke-width="2" d="M20.539 14.852A8 8 0 0 1 11 7c0-1.457.32-2.823 1-4a9 9 0 1 0 8.539 11.852ZM16.625 4l.044.08l.081.045l-.08.044l-.045.081l-.044-.08l-.081-.045l.08-.044zM20.5 8.5l.177.323L21 9l-.323.177l-.177.323l-.177-.323L20 9l.323-.177z" />
+  </g>
+</svg>`;
 
 function setStatus(msg, cls = "status-ok") {
   statusEl.textContent = msg;
@@ -48,7 +68,29 @@ function isWrapEnabled() {
 function applyWrapMode(enabled) {
   editor.classList.toggle("wrap-enabled", enabled);
   editor.wrap = enabled ? "soft" : "off";
-  if (wrapToggleBtn) wrapToggleBtn.classList.toggle("active", enabled);
+  if (wrapToggleBtn) {
+    wrapToggleBtn.classList.toggle("active", enabled);
+    wrapToggleBtn.innerHTML = WRAP_ICON;
+    const label = enabled ? "Disable wrap text" : "Enable wrap text";
+    wrapToggleBtn.title = label;
+    wrapToggleBtn.setAttribute("aria-label", label);
+  }
+}
+
+function getThemePreference() {
+  return localStorage.getItem(THEME_STORAGE_KEY) === "light" ? "light" : "dark";
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  if (themeToggleBtn) {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    themeToggleBtn.classList.toggle("active", theme === "light");
+    themeToggleBtn.innerHTML = theme === "dark" ? THEME_LIGHT_ICON : THEME_DARK_ICON;
+    const label = `Switch to ${nextTheme} mode`;
+    themeToggleBtn.title = label;
+    themeToggleBtn.setAttribute("aria-label", label);
+  }
 }
 
 function queueSaveForTab(tabId, text) {
@@ -314,9 +356,9 @@ function getTabIdsForSync(preferTabId = null) {
   const initialTabId = getInitialTabId();
   return [...getAllTabIds()].sort((a, b) => {
     const score = (id) => {
-      if (id === preferTabId) return 0;
-      if (id === initialTabId) return 2;
-      return 1;
+      if (id === initialTabId) return 0;
+      if (id === preferTabId) return 1;
+      return 2;
     };
     return score(a) - score(b);
   });
@@ -346,7 +388,8 @@ async function upsertTabState(tabId, textOverride) {
     clientId: state.clientId,
     kdf: state.kdf,
     auth: state.authToken,
-    initialTabId: getInitialTabId()
+    initialTabId: getInitialTabId(),
+    totalTabCount: getAllTabIds().length
   };
 
   if (!sendWsMessage(payload)) {
@@ -1307,6 +1350,12 @@ wrapToggleBtn.addEventListener("click", () => {
   applyWrapMode(next);
 });
 
+themeToggleBtn.addEventListener("click", () => {
+  const next = getThemePreference() === "dark" ? "light" : "dark";
+  localStorage.setItem(THEME_STORAGE_KEY, next);
+  applyTheme(next);
+});
+
 async function sendUpdate(tabId, text) {
   if (!state.key || !tabId) return;
   const ok = await upsertTabState(tabId, text);
@@ -1366,7 +1415,6 @@ async function switchTab(tabId) {
 document.addEventListener("click", (ev) => {
   if (ev.target.closest("#add-tab")) return;
   if (ev.target.closest(".tab-close")) return;
-  if (!ev.target.closest(".tab-rename-input")) cancelInlineRename();
   resetPendingDelete();
 });
 
@@ -1374,6 +1422,7 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key === "Escape") resetPendingDelete();
 });
 
+applyTheme(getThemePreference());
 applyWrapMode(isWrapEnabled());
 lockUI(true);
 loadDoc()
