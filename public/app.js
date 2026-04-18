@@ -472,18 +472,13 @@ async function commitInlineRename(tabId, requestedName) {
   if (newName === tab.name) {
     state.editingTabId = null;
     renderTabs();
+    if (!tab.persisted) {
+      syncMissingTabs(tabId).catch((err) => {
+        console.error(err);
+        setStatus("Failed to save tab structure.", "status-err");
+      });
+    }
     setStatus("Tab name unchanged.", "status-ok");
-    return;
-  }
-
-  const existingTabId = findTabIdByName(newName);
-  if (existingTabId && existingTabId !== tabId) {
-    setStatus(`A tab named "${newName}" already exists.`, "status-err");
-    requestAnimationFrame(() => {
-      const input = tabsEl.querySelector(`[data-rename-input-for="${tabId}"]`);
-      input?.focus();
-      input?.select();
-    });
     return;
   }
 
@@ -658,22 +653,17 @@ function renderTabs() {
       setStatus("Enter a password to add tabs.", "status-warn");
       return;
     }
-    const requested = prompt("New tab name? (letters/numbers/-/_)", "new");
-    if (!requested) return;
-    const name = normalizeTabName(requested);
-    if (findTabIdByName(name)) {
-      setStatus(`A tab named "${name}" already exists.`, "status-err");
-      return;
-    }
+    const name = nextSuggestedTabName();
     const tabId = crypto.randomUUID();
     ensureLocalTabState(tabId, { name, text: "", ts: 0, persisted: false });
     state.activeTabId = tabId;
+    state.editingTabId = tabId;
     renderTabs();
     editor.value = "";
-    editor.focus();
-    syncMissingTabs(tabId).catch((err) => {
-      console.error(err);
-      setStatus("Failed to save tab structure.", "status-err");
+    requestAnimationFrame(() => {
+      const input = tabsEl.querySelector(`[data-rename-input-for="${tabId}"]`);
+      input?.focus();
+      input?.select();
     });
   };
   tabsEl.appendChild(plus);
@@ -684,6 +674,17 @@ function findTabIdByName(name) {
     if (tab.name === name) return tabId;
   }
   return null;
+}
+
+function nextSuggestedTabName(baseName = "new") {
+  const normalizedBase = normalizeTabName(baseName);
+  if (!findTabIdByName(normalizedBase)) return normalizedBase;
+
+  let suffix = 2;
+  while (findTabIdByName(`${normalizedBase}${suffix}`)) {
+    suffix += 1;
+  }
+  return `${normalizedBase}${suffix}`;
 }
 
 async function deleteTabFlow(tabId) {
@@ -716,11 +717,6 @@ async function renameTabFlow(tabId, requestedName) {
   const newName = normalizeTabName(requestedName);
   if (newName === tab.name) {
     setStatus("Tab name unchanged.", "status-ok");
-    return;
-  }
-  const existingTabId = findTabIdByName(newName);
-  if (existingTabId && existingTabId !== tabId) {
-    setStatus(`A tab named "${newName}" already exists.`, "status-err");
     return;
   }
 
@@ -1368,6 +1364,7 @@ async function switchTab(tabId) {
 }
 
 document.addEventListener("click", (ev) => {
+  if (ev.target.closest("#add-tab")) return;
   if (ev.target.closest(".tab-close")) return;
   if (!ev.target.closest(".tab-rename-input")) cancelInlineRename();
   resetPendingDelete();
