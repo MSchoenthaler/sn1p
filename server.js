@@ -25,7 +25,7 @@ app.use(
 );
 app.use(morgan("dev"));
 app.use(express.json({ limit: "2mb" }));
-app.use(express.static(PUBLIC_DIR));
+app.use(express.static(PUBLIC_DIR, { index: false }));
 app.use(createDocRoutes({ docService, publicDir: PUBLIC_DIR }));
 
 const server = http.createServer(app);
