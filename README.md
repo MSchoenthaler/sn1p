@@ -21,7 +21,7 @@ The browser encrypts note content and tab labels before anything is sent to the 
 Each document has a random URL such as:
 
 ```text
-http://localhost:8080/21al623v
+http://localhost:8080/21al623v2dhh
 ```
 
 When a client opens a document:
