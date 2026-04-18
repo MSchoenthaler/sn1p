@@ -249,6 +249,7 @@ button:disabled {
   border-radius: 0.45rem;
   background: transparent;
   color: var(--tab-text);
+  font: inherit;
   text-align: left;
   box-shadow: none;
 }
