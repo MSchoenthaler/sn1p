@@ -594,11 +594,12 @@ function renderTabs() {
     const armedDelete = state.pendingDeleteTabId === tabId;
     const isEditing = state.editingTabId === tabId;
 
-    const el = document.createElement("button");
+    const el = document.createElement(isEditing ? "div" : "button");
     el.className = "tab" + (tabId === state.activeTabId ? " active" : "");
     if (isEditing) el.className += " editing";
     if (!canEdit()) el.className += " disabled";
     el.setAttribute("data-tab-id", tabId);
+    if (!isEditing) el.type = "button";
 
     if (isEditing) {
       const input = document.createElement("input");
