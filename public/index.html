@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>sn1p - E2E Encrypted Notepad</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<header>
+  <h1>sn1p</h1>
+  <div class="doc-name" id="doc-name"></div>
+  <div class="actions">
+    <div class="password-controls">
+      <div class="password-unlock-row" id="password-unlock-row">
+        <label title="Password is never sent to the server">
+          Password:
+          <input type="password" id="password" autocomplete="off" data-1p-ignore="true" />
+        </label>
+        <button id="unlock-btn" type="button">Unlock</button>
+      </div>
+
+      <div class="password-change-shell" id="password-change-shell" hidden>
+        <button id="wrap-toggle" class="wrap-toggle" type="button">Wrap Text</button>
+        <button id="change-password-toggle" type="button">Change password</button>
+        <div class="password-change-panel" id="password-change-panel" hidden>
+          <input type="password" id="new-password" placeholder="New password" autocomplete="off" data-1p-ignore="true" />
+          <button id="apply-password-btn" type="button">Apply</button>
+          <button id="cancel-password-btn" type="button">Cancel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<div class="workspace">
+  <aside class="sidebar">
+    <div class="sidebar-heading">Explorer</div>
+    <nav id="tabs" class="tabs"></nav>
+  </aside>
+
+  <main>
+    <div id="locked-hint" class="locked-hint">&#128274; Enter a password to start editing.</div>
+    <div class="editor-shell">
+      <textarea id="editor" placeholder="Type here..." wrap="off"></textarea>
+    </div>
+    <pre id="printable" class="printable"></pre>
+  </main>
+</div>
+
+<footer id="status"></footer>
+
+<script src="/app.js"></script>
+</body>
+</html>
