@@ -121,6 +121,7 @@ _storage/
 Install dependencies:
 
 ```bash
+corepack enable
 yarn install
 ```
 
