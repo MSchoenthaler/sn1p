@@ -244,6 +244,7 @@ button:disabled {
   gap: 0.1rem;
   width: 100%;
   min-width: 0;
+  min-height: 2rem;
   padding: 0.4rem 0.65rem;
   border: 1px solid transparent;
   border-radius: 0.45rem;
@@ -294,6 +295,7 @@ button:disabled {
 .tab-rename-input {
   flex: 1;
   min-width: 0;
+  height: 1.35rem;
   background: var(--input-bg);
   color: var(--text-body);
   border: 1px solid var(--tab-input-border);
@@ -301,6 +303,7 @@ button:disabled {
   padding: 0.08rem 0.35rem;
   line-height: 1.2;
   font: inherit;
+  margin: 0;
   outline: none;
 }
 
