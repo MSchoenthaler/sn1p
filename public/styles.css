@@ -298,7 +298,8 @@ button:disabled {
   color: var(--text-body);
   border: 1px solid var(--tab-input-border);
   border-radius: 0.35rem;
-  padding: 0.2rem 0.45rem;
+  padding: 0.08rem 0.35rem;
+  line-height: 1.2;
   font: inherit;
   outline: none;
 }
