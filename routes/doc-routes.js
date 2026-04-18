@@ -1,6 +1,6 @@
 import express from "express";
 import path from "path";
-import { allocateDocId, sanitizeDocName } from "../lib/doc-store.js";
+import { allocateDocId, canonicalDocName } from "../lib/doc-store.js";
 
 export function createDocRoutes({ docService, publicDir }) {
   const router = express.Router();
@@ -17,6 +17,9 @@ export function createDocRoutes({ docService, publicDir }) {
 
   router.get("/api/doc/:doc", async (req, res) => {
     try {
+      if (!canonicalDocName(req.params.doc)) {
+        return res.status(400).json({ error: "Invalid document id" });
+      }
       const result = await docService.getDocMeta(req.params.doc);
       res.status(result.status).json(result.body);
     } catch (err) {
@@ -27,6 +30,9 @@ export function createDocRoutes({ docService, publicDir }) {
 
   router.post("/api/doc/:doc/unlock", async (req, res) => {
     try {
+      if (!canonicalDocName(req.params.doc)) {
+        return res.status(400).json({ error: "Invalid document id" });
+      }
       const result = await docService.unlockDocument(req.params.doc, req.body?.auth);
       res.status(result.status).json(result.body);
     } catch (err) {
@@ -36,7 +42,13 @@ export function createDocRoutes({ docService, publicDir }) {
   });
 
   router.get("/:doc", (req, res) => {
-    sanitizeDocName(req.params.doc);
+    const canonical = canonicalDocName(req.params.doc);
+    if (!canonical) {
+      return res.status(400).send("Invalid document id");
+    }
+    if (req.params.doc !== canonical) {
+      return res.redirect(302, `/${canonical}`);
+    }
     res.sendFile(path.join(publicDir, "index.html"));
   });
 

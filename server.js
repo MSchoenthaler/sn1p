@@ -17,8 +17,8 @@ app.use(
     contentSecurityPolicy: {
       useDefaults: true,
       directives: {
-        "script-src": ["'self'", "'unsafe-inline'"],
-        "connect-src": ["'self'", "ws:", "wss:"]
+        "script-src": ["'self'"],
+        "connect-src": ["'self'"]
       }
     }
   })

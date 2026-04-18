@@ -752,7 +752,7 @@ function isWsOpen() {
 }
 
 function shouldReconnectWs() {
-  return !state.docExists || !!state.authToken;
+  return !!state.authToken;
 }
 
 function scheduleReconnect() {
@@ -782,12 +782,12 @@ async function connectWs() {
   }
 
   const proto = location.protocol === "https:" ? "wss" : "ws";
-  const authQuery = state.authToken ? `&auth=${encodeURIComponent(state.authToken)}` : "";
-  const ws = new WebSocket(`${proto}://${location.host}?doc=${encodeURIComponent(DOC)}${authQuery}`);
+  const ws = new WebSocket(`${proto}://${location.host}/?doc=${encodeURIComponent(DOC)}`);
   state.ws = ws;
 
   return await new Promise((resolve) => {
     let settled = false;
+    let authed = false;
     const finish = () => {
       if (!settled) {
         settled = true;
@@ -797,21 +797,23 @@ async function connectWs() {
 
     ws.onopen = () => {
       if (state.ws !== ws) return;
-      if (state.reconnectTimer) {
-        clearTimeout(state.reconnectTimer);
-        state.reconnectTimer = null;
+      if (!state.authToken) {
+        try {
+          ws.close(4001, "Missing auth");
+        } catch {
+          // ignore close errors
+        }
+        finish();
+        return;
       }
-      setStatus("Connected.", "status-ok");
-      flushDirtyTabs().catch((err) => {
-        console.error(err);
-        setStatus("Failed to sync pending changes.", "status-err");
-      });
-      finish();
+      ws.send(JSON.stringify({ type: "auth", auth: state.authToken }));
     };
 
     ws.onclose = () => {
       if (state.ws !== ws) return;
-      setStatus("Disconnected. Reconnecting...", "status-warn");
+      if (authed) {
+        setStatus("Disconnected. Reconnecting...", "status-warn");
+      }
       scheduleReconnect();
       finish();
     };
@@ -823,6 +825,58 @@ async function connectWs() {
 
     ws.onmessage = async (ev) => {
       const msg = JSON.parse(ev.data);
+
+      if (msg.type === "authOk") {
+        if (state.ws !== ws) return;
+        authed = true;
+        if (state.reconnectTimer) {
+          clearTimeout(state.reconnectTimer);
+          state.reconnectTimer = null;
+        }
+        setStatus("Connected.", "status-ok");
+        flushDirtyTabs().catch((err) => {
+          console.error(err);
+          setStatus("Failed to sync pending changes.", "status-err");
+        });
+        finish();
+        return;
+      } else if (msg.type === "authError") {
+        state.key = null;
+        state.authToken = null;
+        state.pendingRotate = null;
+        restorePendingRename();
+        clearPlaintextState();
+        lockUI(true);
+        if (msg.reason === "locked" && msg.lockUntil) {
+          const until = new Date(msg.lockUntil);
+          setStatus(`This document is temporarily locked until ${until.toLocaleTimeString()}.`, "status-err");
+        } else if (msg.reason === "invalidDoc") {
+          setStatus("Invalid document id.", "status-err");
+        } else {
+          setStatus("This session can no longer write. Re-enter the current password.", "status-err");
+        }
+        try {
+          ws.close(4001, "Unauthorized");
+        } catch {
+          // ignore close errors
+        }
+        finish();
+        return;
+      } else if (msg.type === "serverError") {
+        setStatus("The server hit an unexpected error. Reconnecting...", "status-err");
+        if (state.ws === ws) {
+          state.ws = null;
+        }
+        try {
+          ws.close(1011, "Server error");
+        } catch {
+          // ignore close errors
+        }
+        scheduleReconnect();
+        return;
+      }
+
+      if (!authed) return;
 
       if (msg.type === "upsertTab" || msg.type === "upsertAck") {
         if (msg.emptied) {
@@ -873,19 +927,6 @@ async function connectWs() {
         }
       } else if (msg.type === "rekeyAck") {
         // no-op
-      } else if (msg.type === "authError") {
-        state.key = null;
-        state.authToken = null;
-        state.pendingRotate = null;
-        restorePendingRename();
-        clearPlaintextState();
-        lockUI(true);
-        if (msg.reason === "locked" && msg.lockUntil) {
-          const until = new Date(msg.lockUntil);
-          setStatus(`This document is temporarily locked until ${until.toLocaleTimeString()}.`, "status-err");
-        } else {
-          setStatus("This session can no longer write. Re-enter the current password.", "status-err");
-        }
       } else if (msg.type === "tabError") {
         restorePendingRename();
         setStatus(msg.reason === "protectedTab" ? "The first tab cannot be deleted." : "Tab update failed.", msg.reason === "protectedTab" ? "status-warn" : "status-err");
