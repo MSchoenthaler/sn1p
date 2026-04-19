@@ -453,6 +453,39 @@ footer {
 }
 
 @media (max-width: 860px) {
+  header {
+    flex-wrap: wrap;
+    align-items: flex-start;
+    gap: 0.55rem 0.75rem;
+  }
+
+  .actions {
+    width: 100%;
+    margin-left: 0;
+  }
+
+  .password-controls,
+  .password-unlock-row,
+  .password-change-shell,
+  .password-change-panel {
+    flex-wrap: wrap;
+    max-width: 100%;
+  }
+
+  .password-unlock-row label {
+    flex: 1 1 12rem;
+    min-width: 0;
+  }
+
+  input[type=password] {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  #password {
+    width: 100%;
+  }
+
   .workspace {
     grid-template-columns: 1fr;
     height: auto;
