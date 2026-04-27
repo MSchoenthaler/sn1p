@@ -159,8 +159,22 @@ function canEdit() {
   return !!state.key;
 }
 
+const B64_ENCODE_CHUNK_SIZE = 0x8000 - (0x8000 % 3);
+
 function b64enc(ab) {
-  return btoa(String.fromCharCode(...new Uint8Array(ab)));
+  const bytes = new Uint8Array(ab);
+  let out = "";
+
+  for (let i = 0; i < bytes.length; i += B64_ENCODE_CHUNK_SIZE) {
+    const chunk = bytes.subarray(i, i + B64_ENCODE_CHUNK_SIZE);
+    let binary = "";
+    for (let j = 0; j < chunk.length; j += 1) {
+      binary += String.fromCharCode(chunk[j]);
+    }
+    out += btoa(binary);
+  }
+
+  return out;
 }
 
 function b64dec(b64) {

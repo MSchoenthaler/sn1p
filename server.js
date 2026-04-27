@@ -8,6 +8,8 @@ import { createDocService } from "./lib/doc-service.js";
 import { createDocRoutes } from "./routes/doc-routes.js";
 
 const PORT = process.env.PORT || 8080;
+const HTTP_JSON_LIMIT = process.env.HTTP_JSON_LIMIT || "10mb";
+const WS_MAX_PAYLOAD_BYTES = Number(process.env.WS_MAX_PAYLOAD_BYTES) || 256 * 1024 * 1024;
 
 const app = express();
 const docService = createDocService();
@@ -24,12 +26,12 @@ app.use(
   })
 );
 app.use(morgan("dev"));
-app.use(express.json({ limit: "2mb" }));
+app.use(express.json({ limit: HTTP_JSON_LIMIT }));
 app.use(express.static(PUBLIC_DIR, { index: false }));
 app.use(createDocRoutes({ docService, publicDir: PUBLIC_DIR }));
 
 const server = http.createServer(app);
-const wss = new WebSocketServer({ server });
+const wss = new WebSocketServer({ server, maxPayload: WS_MAX_PAYLOAD_BYTES });
 
 wss.on("connection", (ws, req) => {
   docService.handleWsConnection(ws, req).catch((err) => {
