@@ -4,6 +4,11 @@
   display: none !important;
 }
 
+html,
+body {
+  height: 100%;
+}
+
 :root {
   --bg-body: #0b0f12;
   --text-body: #e6edf3;
@@ -39,6 +44,9 @@
   --editor-bg: #0b0f12;
   --editor-readonly-bg: #0a0d10;
   --editor-readonly-border: #263241;
+  --line-number-bg: #090d10;
+  --line-number-border: #18232d;
+  --line-number-text: #5f6b78;
   --hint-bg: #0d141a;
   --footer-bg: #0d141a;
   --footer-border: #1b2732;
@@ -86,6 +94,9 @@
   --editor-bg: #ffffff;
   --editor-readonly-bg: #f3f6fa;
   --editor-readonly-border: #c7d3e0;
+  --line-number-bg: #eef3f8;
+  --line-number-border: #d7e1eb;
+  --line-number-text: #7a8795;
   --hint-bg: #f6f9fc;
   --footer-bg: #ffffff;
   --footer-border: #d4dde8;
@@ -98,11 +109,46 @@
   --toggle-active-text: #2596dd;
 }
 
+:root:not([data-theme="light"]) {
+  scrollbar-color: #2f3b46 #0b0f12;
+}
+
+:root:not([data-theme="light"]) #editor,
+:root:not([data-theme="light"]) .tabs {
+  scrollbar-color: #2f3b46 #0b0f12;
+}
+
+:root:not([data-theme="light"]) #editor::-webkit-scrollbar,
+:root:not([data-theme="light"]) .tabs::-webkit-scrollbar {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+:root:not([data-theme="light"]) #editor::-webkit-scrollbar-track,
+:root:not([data-theme="light"]) .tabs::-webkit-scrollbar-track {
+  background: #0b0f12;
+}
+
+:root:not([data-theme="light"]) #editor::-webkit-scrollbar-thumb,
+:root:not([data-theme="light"]) .tabs::-webkit-scrollbar-thumb {
+  background: #2f3b46;
+  border: 3px solid #0b0f12;
+  border-radius: 999px;
+}
+
+:root:not([data-theme="light"]) #editor::-webkit-scrollbar-thumb:hover,
+:root:not([data-theme="light"]) .tabs::-webkit-scrollbar-thumb:hover {
+  background: #465563;
+}
+
 body {
   margin: 0;
   font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
   background: var(--bg-body);
   color: var(--text-body);
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
 }
 
 header {
@@ -209,13 +255,14 @@ button:disabled {
 .workspace {
   display: grid;
   grid-template-columns: 260px minmax(0, 1fr);
-  height: calc(100vh - 6.25rem);
+  min-height: 0;
 }
 
 .sidebar {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   border-right: 1px solid var(--sidebar-border);
   background: var(--sidebar-bg);
 }
@@ -338,13 +385,22 @@ main {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
   height: 100%;
 }
 
 .editor-shell {
   flex: 1;
+  display: flex;
   min-height: 0;
   min-width: 0;
+  background: var(--editor-bg);
+  overflow: hidden;
+}
+
+.editor-shell.readonly {
+  background: var(--editor-readonly-bg);
+  border-top: 1px dashed var(--editor-readonly-border);
 }
 
 .icon-toggle {
@@ -377,10 +433,11 @@ main {
 }
 
 #editor {
-  flex: 1;
-  width: 100%;
+  flex: 1 1 auto;
+  width: auto;
   height: 100%;
   min-height: 0;
+  min-width: 0;
   padding: 1rem;
   background: var(--editor-bg);
   color: var(--text-body);
@@ -403,7 +460,42 @@ main {
 
 #editor[readonly] {
   background: var(--editor-readonly-bg);
-  border-top: 1px dashed var(--editor-readonly-border);
+}
+
+.line-numbers {
+  --line-number-field-width: 2ch;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  width: calc(var(--line-number-field-width) + 0.7rem);
+  height: 100%;
+  min-height: 0;
+  padding: 1rem 0.35rem 1rem 0.35rem;
+  overflow: hidden;
+  border-right: 1px solid var(--line-number-border);
+  background: var(--line-number-bg);
+  color: var(--line-number-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 14px;
+  line-height: 1.5;
+  text-align: right;
+  white-space: pre;
+  user-select: none;
+}
+
+.line-number-row {
+  line-height: inherit;
+}
+
+.line-measure {
+  position: fixed;
+  left: 0;
+  top: 0;
+  visibility: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: normal;
+  pointer-events: none;
+  z-index: -1;
 }
 
 .printable {
@@ -453,6 +545,16 @@ footer {
 }
 
 @media (max-width: 860px) {
+  html,
+  body {
+    height: auto;
+  }
+
+  body {
+    display: block;
+    overflow: auto;
+  }
+
   header {
     flex-wrap: wrap;
     align-items: flex-start;

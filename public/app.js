@@ -6,6 +6,8 @@ document.title = `${DOC} - sn1p`;
 $("#doc-name").textContent = `/${DOC}`;
 
 const editor = $("#editor");
+const editorShell = $(".editor-shell");
+const lineNumbers = $("#line-numbers");
 const printable = $("#printable");
 const wrapToggleBtn = $("#wrap-toggle");
 const themeToggleBtn = $("#theme-toggle");
@@ -75,6 +77,7 @@ function applyWrapMode(enabled) {
     wrapToggleBtn.title = label;
     wrapToggleBtn.setAttribute("aria-label", label);
   }
+  updateLineNumbers();
 }
 
 function getThemePreference() {
@@ -91,6 +94,100 @@ function applyTheme(theme) {
     themeToggleBtn.title = label;
     themeToggleBtn.setAttribute("aria-label", label);
   }
+}
+
+let renderedLineSignature = "";
+let lineMeasureEl = null;
+
+function getEditorLines() {
+  return editor.value.split("\n");
+}
+
+function getEditorLineHeight() {
+  const style = getComputedStyle(editor);
+  const lineHeight = Number.parseFloat(style.lineHeight);
+  if (Number.isFinite(lineHeight)) return lineHeight;
+
+  const fontSize = Number.parseFloat(style.fontSize);
+  return Number.isFinite(fontSize) ? fontSize * 1.5 : 21;
+}
+
+function getEditorContentWidth() {
+  const style = getComputedStyle(editor);
+  const paddingLeft = Number.parseFloat(style.paddingLeft) || 0;
+  const paddingRight = Number.parseFloat(style.paddingRight) || 0;
+  return Math.max(1, editor.clientWidth - paddingLeft - paddingRight);
+}
+
+function getLineMeasureEl() {
+  if (lineMeasureEl) return lineMeasureEl;
+
+  lineMeasureEl = document.createElement("div");
+  lineMeasureEl.className = "line-measure";
+  document.body.appendChild(lineMeasureEl);
+  return lineMeasureEl;
+}
+
+function syncLineMeasureStyles() {
+  const measure = getLineMeasureEl();
+  const style = getComputedStyle(editor);
+
+  measure.style.width = `${getEditorContentWidth()}px`;
+  measure.style.fontFamily = style.fontFamily;
+  measure.style.fontSize = style.fontSize;
+  measure.style.fontStyle = style.fontStyle;
+  measure.style.fontWeight = style.fontWeight;
+  measure.style.letterSpacing = style.letterSpacing;
+  measure.style.lineHeight = style.lineHeight;
+  measure.style.tabSize = style.tabSize;
+}
+
+function measureWrappedLineHeight(line, lineHeight) {
+  const measure = getLineMeasureEl();
+  measure.textContent = line || "\u00a0";
+  return Math.max(lineHeight, measure.getBoundingClientRect().height);
+}
+
+function syncLineNumberScroll() {
+  if (!lineNumbers) return;
+  lineNumbers.scrollTop = editor.scrollTop;
+}
+
+function updateLineNumbers() {
+  if (!lineNumbers) return;
+
+  const lines = getEditorLines();
+  const wrapEnabled = editor.classList.contains("wrap-enabled");
+  const digitCount = String(lines.length).length;
+  const gutterWidth = `${digitCount + 1}ch`;
+
+  const signature = wrapEnabled
+    ? `wrap:${editor.clientWidth}:${editor.value}`
+    : `nowrap:${lines.length}:${gutterWidth}`;
+  lineNumbers.style.setProperty("--line-number-field-width", gutterWidth);
+
+  if (signature !== renderedLineSignature) {
+    const lineHeight = getEditorLineHeight();
+    if (wrapEnabled) syncLineMeasureStyles();
+
+    const fragment = document.createDocumentFragment();
+    lines.forEach((line, index) => {
+      const row = document.createElement("div");
+      row.className = "line-number-row";
+      row.textContent = String(index + 1);
+      row.style.height = `${wrapEnabled ? measureWrappedLineHeight(line, lineHeight) : lineHeight}px`;
+      fragment.appendChild(row);
+    });
+    lineNumbers.replaceChildren(fragment);
+
+    renderedLineSignature = signature;
+  }
+  syncLineNumberScroll();
+}
+
+function setEditorValue(text) {
+  editor.value = text;
+  updateLineNumbers();
 }
 
 function queueSaveForTab(tabId, text) {
@@ -111,7 +208,7 @@ function focusEditorAtTrailingBlankLine(tabId) {
   let nextValue = editor.value;
   if (nextValue !== "" && !nextValue.endsWith("\n")) {
     nextValue += "\n";
-    editor.value = nextValue;
+    setEditorValue(nextValue);
     queueSaveForTab(tabId, nextValue);
   }
 
@@ -142,6 +239,7 @@ function lockUI(locked) {
     editor.readOnly = false;
     editor.removeAttribute("readonly");
   }
+  editorShell?.classList.toggle("readonly", locked);
   const hint = $("#locked-hint");
   if (hint) hint.style.display = locked ? "block" : "none";
   syncPasswordUI();
@@ -338,7 +436,7 @@ function removeTabLocally(tabId) {
   if (state.doc?.tabs) delete state.doc.tabs[tabId];
   if (state.activeTabId === tabId) {
     state.activeTabId = pickNextActiveTab();
-    editor.value = "";
+    setEditorValue("");
   }
 }
 
@@ -473,7 +571,7 @@ async function applyDocEmptied(tabId, entry, options = {}) {
   state.tabs.clear();
   state.tabs.set(tabId, { name, text: "", ts: 0, persisted: false });
   state.activeTabId = tabId;
-  editor.value = "";
+  setEditorValue("");
   renderTabs();
   setStatus(options.fromSelf ? "Cleared." : "Cleared remotely.", options.fromSelf ? "status-ok" : "status-warn");
 }
@@ -488,7 +586,7 @@ function clearPlaintextState() {
   state.activeTabId = null;
   state.pendingDeleteTabId = null;
   state.editingTabId = null;
-  editor.value = "";
+  setEditorValue("");
   if (printable) printable.textContent = "";
 }
 
@@ -721,7 +819,7 @@ function renderTabs() {
     state.activeTabId = tabId;
     state.editingTabId = tabId;
     renderTabs();
-    editor.value = "";
+    setEditorValue("");
     requestAnimationFrame(() => {
       const input = tabsEl.querySelector(`[data-rename-input-for="${tabId}"]`);
       input?.focus();
@@ -1029,16 +1127,16 @@ async function applyEncryptedTab(tabId, entry, options = {}) {
             ? await decryptAndUnpack(state.key, b64dec(entry.iv), b64dec(entry.ct))
             : await decryptGCM(state.key, b64dec(entry.iv), b64dec(entry.ct));
         next.text = text;
-        if (tabId === state.activeTabId) editor.value = text;
+        if (tabId === state.activeTabId) setEditorValue(text);
       } catch {
         next.text = "";
-        if (tabId === state.activeTabId) editor.value = "";
+        if (tabId === state.activeTabId) setEditorValue("");
       }
     }
   } else {
     next.text = "";
     next.ts = entry.ts || 0;
-    if (tabId === state.activeTabId) editor.value = "";
+    if (tabId === state.activeTabId) setEditorValue("");
   }
 
   state.tabs.set(tabId, next);
@@ -1129,21 +1227,21 @@ async function hydrateActiveTabFromCipher() {
   const tabId = firstExistingTabId();
   state.activeTabId = tabId;
   if (!tabId) {
-    editor.value = "";
+    setEditorValue("");
     renderTabs();
     return;
   }
 
   const slot = getPersistedTabs()[tabId];
   if (!slot) {
-    editor.value = state.tabs.get(tabId)?.text || "";
+    setEditorValue(state.tabs.get(tabId)?.text || "");
     renderTabs();
     return;
   }
 
   if (!slot.iv || !slot.ct) {
     ensureLocalTabState(tabId, { text: "", ts: slot.ts || 0, persisted: true });
-    editor.value = "";
+    setEditorValue("");
     renderTabs();
     return;
   }
@@ -1154,10 +1252,10 @@ async function hydrateActiveTabFromCipher() {
         ? await decryptAndUnpack(state.key, b64dec(slot.iv), b64dec(slot.ct))
         : await decryptGCM(state.key, b64dec(slot.iv), b64dec(slot.ct));
     ensureLocalTabState(tabId, { text, ts: slot.ts || 0, persisted: true });
-    editor.value = text;
+    setEditorValue(text);
   } catch {
     setStatus("Wrong password.", "status-err");
-    editor.value = "";
+    setEditorValue("");
   }
 
   renderTabs();
@@ -1165,7 +1263,7 @@ async function hydrateActiveTabFromCipher() {
 
 function renderActiveTab() {
   const tab = currentTabState();
-  editor.value = tab?.text || "";
+  setEditorValue(tab?.text || "");
 }
 
 async function unlockWithPassword() {
@@ -1384,13 +1482,14 @@ async function sendUpdate(tabId, text) {
 }
 
 editor.addEventListener("input", () => {
+  updateLineNumbers();
   if (!canEdit()) {
     setStatus("Enter a password to edit.", "status-warn");
     return;
   }
   if (!state.activeTabId) {
     setStatus("Add a tab before editing.", "status-warn");
-    editor.value = "";
+    setEditorValue("");
     return;
   }
   const tabId = state.activeTabId;
@@ -1404,6 +1503,10 @@ editor.addEventListener("input", () => {
     });
   }, 450);
 });
+
+editor.addEventListener("scroll", syncLineNumberScroll);
+
+window.addEventListener("resize", updateLineNumbers);
 
 async function switchTab(tabId) {
   resetPendingDelete(false);
@@ -1419,13 +1522,13 @@ async function switchTab(tabId) {
           ? await decryptAndUnpack(state.key, b64dec(slot.iv), b64dec(slot.ct))
           : await decryptGCM(state.key, b64dec(slot.iv), b64dec(slot.ct));
       ensureLocalTabState(tabId, { text, ts: slot.ts || 0, persisted: true });
-      editor.value = text;
+      setEditorValue(text);
     } catch {
       setStatus("Unable to decrypt this tab with your password.", "status-err");
-      editor.value = "";
+      setEditorValue("");
     }
   } else {
-    editor.value = slot ? "" : local?.text || "";
+    setEditorValue(slot ? "" : local?.text || "");
     if (slot) ensureLocalTabState(tabId, { text: "", ts: slot.ts || 0, persisted: true });
   }
   focusEditorAtTrailingBlankLine(tabId);
