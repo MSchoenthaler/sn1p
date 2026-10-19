@@ -73,7 +73,7 @@ class Element {
   select() {}
 }
 
-async function client(service, name, t, { legacyProtocol = false } = {}) {
+async function client(service, name, t, { legacyProtocol = false, storage = new Map() } = {}) {
   const elements = new Map();
   const element = (selector) => {
     if (!elements.has(selector)) elements.set(selector, new Element(document));
@@ -120,7 +120,10 @@ async function client(service, name, t, { legacyProtocol = false } = {}) {
     console, crypto: webcrypto, TextEncoder, TextDecoder, Uint8Array, btoa, atob,
     location: { pathname: `/${name}`, host: "localhost", protocol: "http:" },
     document,
-    window: new Element(), localStorage: { getItem() { return null; }, setItem() {} },
+    window: new Element(), localStorage: {
+      getItem(key) { return storage.get(key) ?? null; },
+      setItem(key, value) { storage.set(key, String(value)); }
+    },
     getComputedStyle: () => ({ lineHeight: "21", fontSize: "14" }),
     requestAnimationFrame() {},
     setTimeout: (fn, delay) => { const id = setTimeout(fn, delay); timers.add(id); return id; }, clearTimeout,
@@ -142,6 +145,7 @@ async function client(service, name, t, { legacyProtocol = false } = {}) {
   const api = context.api;
   api.focused = () => document.activeElement;
   api.element = element;
+  api.storage = storage;
   api.delayAck = (delay) => { ackDelay = delay; };
   api.delayRelease = (delay) => { releaseDelay = delay; };
   t.after(() => {
@@ -180,6 +184,45 @@ function descendants(element) {
 function currentHighlight(client) {
   return descendants(client.element("#editor-search-highlights")).find((el) => el.classList.contains("current"));
 }
+
+test("spellcheck defaults off and toggles locally without changing note content or caret", async (t) => {
+  const { a, b } = await pair(t);
+  const toggle = a.element("#spellcheck-toggle");
+  assert.equal(a.editor.spellcheck, false);
+  assert.equal(toggle.getAttribute("aria-pressed"), "false");
+  assert.equal(toggle.title, "Enable spell check");
+  assert.match(toggle.innerHTML, /viewBox="0 0 16 16"/);
+  a.editor.setSelectionRange(2, 2);
+  toggle.dispatch("click");
+  assert.equal(a.editor.spellcheck, true);
+  assert.equal(toggle.classList.contains("active"), true);
+  assert.equal(toggle.getAttribute("aria-pressed"), "true");
+  assert.equal(toggle.getAttribute("aria-label"), "Disable spell check");
+  assert.equal(a.storage.get("sn1p-spellcheck-enabled"), "1");
+  assert.equal(b.editor.spellcheck, false);
+  assert.equal(a.editor.value, "original");
+  assert.equal(a.editor.selectionStart, 2);
+  assert.equal(a.state.dirtyTabs.size, 0);
+  toggle.dispatch("click");
+  assert.equal(a.editor.spellcheck, false);
+  assert.equal(toggle.classList.contains("active"), false);
+  assert.equal(toggle.getAttribute("aria-pressed"), "false");
+  assert.equal(a.storage.get("sn1p-spellcheck-enabled"), "0");
+});
+
+test("spellcheck restores the browser preference when reopening a note", async (t) => {
+  const name = `clienttest${randomUUID().replaceAll("-", "")}`;
+  const service = createDocService();
+  t.after(async () => { await withDocLock(name, () => removeDoc(name)); });
+  const storage = new Map([["sn1p-spellcheck-enabled", "1"]]);
+  const a = await client(service, name, t, { storage });
+  assert.equal(a.editor.spellcheck, true);
+  assert.equal(a.element("#spellcheck-toggle").classList.contains("active"), true);
+  a.element("#spellcheck-toggle").dispatch("click");
+  const b = await client(service, name, t, { storage });
+  assert.equal(b.editor.spellcheck, false);
+  assert.equal(b.element("#spellcheck-toggle").getAttribute("aria-pressed"), "false");
+});
 
 test("editor blur preserves the pressed tab through save and lock handoff", async (t) => {
   const { a, b, tabId } = await pair(t);
