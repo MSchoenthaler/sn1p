@@ -308,6 +308,7 @@ button:disabled {
 }
 
 #tab-search::placeholder { color: var(--muted-text); }
+#tab-search:focus { outline: none; box-shadow: none; }
 #tab-search:disabled { opacity: 0.55; }
 #tab-search::-webkit-search-cancel-button { display: none; }
 .search-field:focus-within { outline: 2px solid var(--tab-active-border); }
