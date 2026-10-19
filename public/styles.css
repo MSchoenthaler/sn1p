@@ -395,12 +395,13 @@ main {
   min-height: 0;
   min-width: 0;
   background: var(--editor-bg);
+  border-top: 1px solid transparent;
   overflow: hidden;
 }
 
 .editor-shell.readonly {
   background: var(--editor-readonly-bg);
-  border-top: 1px dashed var(--editor-readonly-border);
+  border-top-color: var(--editor-readonly-border);
 }
 
 .icon-toggle {
@@ -512,11 +513,20 @@ main {
 }
 
 footer {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
   padding: 0.45rem 1rem;
   font-size: 0.85rem;
   color: var(--muted-text);
   border-top: 1px solid var(--footer-border);
   background: var(--footer-bg);
+}
+
+#editing-status {
+  flex: 0 0 6rem;
+  text-align: right;
 }
 
 .status-ok { color: var(--status-ok); }

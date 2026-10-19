@@ -11,6 +11,7 @@ The browser encrypts note content and tab labels before anything is sent to the 
 - Encrypted tab labels and encrypted tab content
 - Explorer-style tab list
 - Realtime sync across open clients
+- Automatic exclusive editing per tab; other clients remain live readers
 - Password rotation with full re-encryption
 - File-only storage under `_storage/`
 - Document-wide auth throttling and temporary lockout
@@ -49,7 +50,18 @@ The same password-derived proof is also required for WebSocket access to existin
 
 - This is still a web app, so decrypted content exists in browser memory while a document is unlocked.
 - If an attacker already has a copy of the encrypted document JSON, they can still attempt offline password guessing against that ciphertext.
-- Sync currently uses last-write-wins semantics for content updates.
+- Editing locks are held by the server process. Run one server instance for a storage directory; separate server processes do not share locks.
+- Unsaved edits remain in browser memory until acknowledged. Keep the window open while disconnected or while a save is pending.
+
+### Concurrent Editing
+
+Multiple clients can keep the same note open. The first client to type in an available tab acquires its editing lock; other clients see live updates in read-only mode. Opening, focusing, or selecting text in a reader does not claim editing ownership. Different tabs can be edited at the same time.
+
+Changes sync in batches scheduled within 200 ms, including during continuous typing. After 1.5 seconds without input, the client finishes any pending save and automatically releases editing. Leaving the editor or switching tabs also releases it. There is no handoff button. Editing status appears in the footer without resizing the editor. A disconnected connection loses its locks; server heartbeats detect unresponsive connections in approximately 15-30 seconds.
+
+Every save, rename, and deletion requires the current server-issued lock token. Password changes require ownership of every saved tab. Client clock differences do not decide whose content wins. After a disconnect or simultaneous lock attempt, any unsaved draft that cannot safely be applied is kept in a separate `(recovered)` tab.
+
+Restart the server and reload all open clients when deploying this protocol change. Older clients cannot write without a lock token.
 
 ## Storage Behavior
 
@@ -60,7 +72,7 @@ Current behavior:
 - A brand-new document may exist only in memory until the first save that should persist it.
 - The first tab always exists and cannot be deleted.
 - Empty tabs are preserved when the document itself should remain.
-- If the only remaining tab is the protected first tab and it is empty, the document file is removed.
+- Clearing the first tab preserves the encrypted document metadata, password, and tab identity so other open clients stay attached to the same note.
 
 ## Project Structure
 
@@ -139,6 +151,8 @@ http://localhost:8080
 
 The root route redirects to a new random document id.
 
+Run the sync regression tests with `yarn test`. They exercise the real document service and encryption with in-process WebSocket and DOM test doubles; they do not require a listening network port.
+
 ## HTTP Endpoints
 
 - `GET /`
@@ -188,5 +202,5 @@ Example:
 ## Notes
 
 - The wrap mode toggle is a local browser preference and is remembered with `localStorage`.
-- The editor lands on a trailing blank line after unlock and tab switches for quicker typing.
+- The editor focuses at the end after unlock and tab switches without inserting text into a shared note.
 - The UI is intentionally file-free from the user perspective; import/export has been removed.

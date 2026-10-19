@@ -21,6 +21,7 @@ const passwordUnlockRow = $("#password-unlock-row");
 const passwordChangeShell = $("#password-change-shell");
 const passwordChangePanel = $("#password-change-panel");
 const statusEl = $("#status");
+const editingStatusEl = $("#editing-status");
 const tabsEl = $("#tabs");
 const EDIT_ICON = `
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
@@ -193,38 +194,37 @@ function setEditorValue(text) {
 function queueSaveForTab(tabId, text) {
   if (!tabId || !canEdit()) return;
   ensureLocalTabState(tabId, { text });
-  clearTimeout(state.debounceTimer);
-  state.debounceTimer = setTimeout(() => {
-    sendUpdate(tabId, text).catch((err) => {
-      console.error(err);
-      setStatus("Save failed.", "status-err");
-    });
-  }, 450);
+  if (!state.dirtyTabs.has(tabId)) state.editBases.set(tabId, entryVersion(getPersistedTabs()[tabId]));
+  state.dirtyTabs.add(tabId);
+  // Bound sync latency even when input never pauses. Idle ownership is separate.
+  if (!state.saveTimers.has(tabId)) {
+    state.saveTimers.set(tabId, setTimeout(() => {
+      state.saveTimers.delete(tabId);
+      sendUpdate(tabId).catch((err) => {
+        console.error(err);
+        setStatus("Save failed.", "status-err");
+      });
+    }, 200));
+  }
+  scheduleEditingRelease(tabId);
+  requestTabLock(tabId).catch(reportSyncError);
 }
 
-function focusEditorAtTrailingBlankLine(tabId) {
+function focusEditorAtEnd() {
   if (!canEdit()) return;
-
-  let nextValue = editor.value;
-  if (nextValue !== "" && !nextValue.endsWith("\n")) {
-    nextValue += "\n";
-    setEditorValue(nextValue);
-    queueSaveForTab(tabId, nextValue);
-  }
-
   const caretPos = editor.value.length;
   editor.focus();
   editor.setSelectionRange(caretPos, caretPos);
 }
 
-["beforeinput", "keydown", "paste", "drop"].forEach((ev) => {
+["beforeinput", "paste", "drop"].forEach((ev) => {
   editor.addEventListener(
     ev,
     (e) => {
-      if (!state?.key) {
+      if (!canEditTab(state.activeTabId)) {
         e.preventDefault();
         e.stopImmediatePropagation();
-        setStatus("Enter a password to edit.", "status-warn");
+        showEditingStatus();
       }
     },
     true
@@ -232,18 +232,28 @@ function focusEditorAtTrailingBlankLine(tabId) {
 });
 
 function lockUI(locked) {
-  if (locked) {
+  const readOnly = locked || !canEditTab(state.activeTabId);
+  if (readOnly) {
     editor.readOnly = true;
     editor.setAttribute("readonly", "readonly");
   } else {
     editor.readOnly = false;
     editor.removeAttribute("readonly");
   }
-  editorShell?.classList.toggle("readonly", locked);
+  editorShell?.classList.toggle("readonly", readOnly);
   const hint = $("#locked-hint");
-  if (hint) hint.style.display = locked ? "block" : "none";
+  if (hint) {
+    hint.style.display = locked ? "block" : "none";
+    hint.textContent = "Enter a password to start editing.";
+  }
+  if (editingStatusEl) {
+    editingStatusEl.textContent = locked ? "Locked" : state.syncUnsupported ? "Update needed" : !state.wsReady ? "Connecting"
+      : readOnly ? "Read only" : state.ownedLocks.has(state.activeTabId) ? "Editing" : "Ready";
+    editingStatusEl.title = state.unavailableTabs.has(state.activeTabId)
+      ? "Another client is editing this tab." : "";
+  }
   syncPasswordUI();
-  renderTabs();
+  if (!state.editingTabId || locked) renderTabs();
   if (locked) {
     requestAnimationFrame(() => {
       if (passwordUnlockRow?.hidden) return;
@@ -255,6 +265,23 @@ function lockUI(locked) {
 
 function canEdit() {
   return !!state.key;
+}
+
+function canEditTab(tabId) {
+  return !!state.key && state.wsReady && !!tabId && !state.rotating &&
+    !state.unavailableTabs.has(tabId);
+}
+
+function showEditingStatus() {
+  setStatus(!state.key ? "Enter a password to edit."
+    : !state.wsReady ? "Disconnected. Pending changes are retained in this window."
+    : "Read only while another client edits or pending changes finish.", "status-warn");
+}
+
+function reportSyncError(err) {
+  if (state.syncUnsupported) return;
+  console.error(err);
+  setStatus("Changes are pending. Keep this window open while reconnecting.", "status-warn");
 }
 
 const B64_ENCODE_CHUNK_SIZE = 0x8000 - (0x8000 % 3);
@@ -300,9 +327,22 @@ const state = {
   clientId: crypto.randomUUID(),
   ws: null,
   reconnectTimer: null,
-  debounceTimer: null,
+  wsReady: false,
+  syncUnsupported: false,
+  saveTimers: new Map(),
+  idleTimers: new Map(),
+  ownedLocks: new Map(),
+  unavailableTabs: new Set(),
+  acquiring: new Map(),
+  releasing: new Map(),
+  handoffs: new Set(),
+  composingTabId: null,
+  requests: new Map(),
+  saves: new Map(),
+  editBases: new Map(),
   pendingRename: null,
   pendingRotate: null,
+  rotating: false,
   pendingDeleteTabId: null,
   editingTabId: null,
   dirtyTabs: new Set()
@@ -431,6 +471,8 @@ function ensureInitialTabExists() {
 
 function removeTabLocally(tabId) {
   if (isProtectedTab(tabId)) return;
+  clearTimeout(state.saveTimers.get(tabId));
+  state.saveTimers.delete(tabId);
   state.dirtyTabs.delete(tabId);
   state.tabs.delete(tabId);
   if (state.doc?.tabs) delete state.doc.tabs[tabId];
@@ -495,35 +537,168 @@ async function buildEncryptedTabEntry(tabId, key = state.key, textOverride) {
 
 async function upsertTabState(tabId, textOverride) {
   if (!state.key || !tabId) return false;
-
-  const { entry, text } = await buildEncryptedTabEntry(tabId, state.key, textOverride);
-  const payload = {
-    type: "upsertTab",
-    tabId,
-    entry,
-    clientId: state.clientId,
-    kdf: state.kdf,
-    auth: state.authToken,
-    initialTabId: getInitialTabId(),
-    totalTabCount: getAllTabIds().length
-  };
-
-  if (!sendWsMessage(payload)) {
-    state.dirtyTabs.add(tabId);
-    ensureLocalTabState(tabId, { text });
-    return false;
+  if (textOverride !== undefined) ensureLocalTabState(tabId, { text: textOverride });
+  if (state.saves.has(tabId)) return state.saves.get(tabId);
+  if (!state.dirtyTabs.has(tabId)) state.editBases.set(tabId, entryVersion(getPersistedTabs()[tabId]));
+  state.dirtyTabs.add(tabId);
+  const saving = (async () => {
+    if (!await requestTabLock(tabId)) return false;
+    while (state.dirtyTabs.has(tabId)) {
+      const text = getTabText(tabId);
+      const name = state.tabs.get(tabId)?.name;
+      const lockToken = state.ownedLocks.get(tabId);
+      const { entry } = await buildEncryptedTabEntry(tabId, state.key, text);
+      if (!lockToken || state.ownedLocks.get(tabId) !== lockToken) return false;
+      await requestWs({ type: "upsertTab", tabId, entry, lockToken,
+        kdf: state.kdf, auth: state.authToken, initialTabId: getInitialTabId() });
+      state.docExists = true;
+      state.editBases.set(tabId, entryVersion(getPersistedTabs()[tabId]));
+      if (getTabText(tabId) === text && state.tabs.get(tabId)?.name === name) {
+        state.dirtyTabs.delete(tabId);
+        state.editBases.delete(tabId);
+      }
+    }
+    return true;
+  })();
+  state.saves.set(tabId, saving);
+  try {
+    return await saving;
+  } finally {
+    state.saves.delete(tabId);
   }
+}
 
-  if (!state.doc) state.doc = newEmptyDoc();
-  state.docExists = true;
-  if (!state.doc.tabs) state.doc.tabs = {};
-  if (!state.doc.meta) state.doc.meta = { initialTabId: null };
-  state.doc.kdf = state.kdf;
-  state.doc.meta.initialTabId = getInitialTabId();
-  state.doc.tabs[tabId] = entry;
+function entryVersion(entry) {
+  return entry?.revision || JSON.stringify(entry || null);
+}
+
+function requestWs(message) {
+  return new Promise((resolve, reject) => {
+    const requestId = crypto.randomUUID();
+    const timer = setTimeout(() => {
+      state.requests.delete(requestId);
+      reject(new Error("Sync request timed out"));
+      state.ws?.close();
+    }, 10000);
+    state.requests.set(requestId, { resolve, reject, timer });
+    if (!state.wsReady || !sendWsMessage({ ...message, requestId })) {
+      clearTimeout(timer);
+      state.requests.delete(requestId);
+      reject(new Error("Disconnected"));
+    }
+  });
+}
+
+function finishRequest(msg) {
+  const pending = state.requests.get(msg.requestId);
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  state.requests.delete(msg.requestId);
+  if (msg.type === "tabError") pending.reject(new Error(msg.reason));
+  else pending.resolve(msg);
+}
+
+function preservePendingDraft(tabId) {
+  if (!state.dirtyTabs.has(tabId)) return;
+  const local = state.tabs.get(tabId);
+  const recoveryId = crypto.randomUUID();
+  ensureLocalTabState(recoveryId, { name: `${local?.name || "tab"} (recovered)`,
+    text: getTabText(tabId), persisted: false });
+  state.dirtyTabs.add(recoveryId);
+  state.editBases.set(recoveryId, entryVersion(null));
   state.dirtyTabs.delete(tabId);
-  ensureLocalTabState(tabId, { text, ts: entry.ts || 0, persisted: true });
-  return true;
+  state.editBases.delete(tabId);
+  clearTimeout(state.saveTimers.get(tabId));
+  state.saveTimers.delete(tabId);
+  queueSaveForTab(recoveryId, state.tabs.get(recoveryId).text);
+  setStatus("Unsaved changes kept in a recovered tab because editing ownership changed.", "status-warn");
+}
+
+async function requestTabLock(tabId) {
+  if (state.handoffs.has(tabId)) await state.releasing.get(tabId);
+  if (state.ownedLocks.has(tabId)) return true;
+  if (!state.wsReady || !state.key || !state.tabs.has(tabId)) return false;
+  if (state.acquiring.has(tabId)) return state.acquiring.get(tabId);
+  const acquisition = (async () => {
+    const reply = await requestWs({ type: "acquireTab", tabId, auth: state.authToken });
+    if (reply.type === "lockDenied") {
+      state.unavailableTabs.add(tabId);
+      preservePendingDraft(tabId);
+      if (getPersistedTabs()[tabId]) {
+        await applyEncryptedTab(tabId, getPersistedTabs()[tabId]);
+      } else {
+        ensureLocalTabState(tabId, { text: "" });
+        if (tabId === state.activeTabId) setEditorValue("");
+      }
+      lockUI(false);
+      return false;
+    }
+    state.ownedLocks.set(tabId, reply.lockToken);
+    state.unavailableTabs.delete(tabId);
+    if (state.dirtyTabs.has(tabId) && state.editBases.get(tabId) !== entryVersion(reply.entry)) {
+      preservePendingDraft(tabId);
+    }
+    if (reply.entry) {
+      await applyEncryptedTab(tabId, reply.entry, { fromSelf: state.dirtyTabs.has(tabId) });
+    } else if (getPersistedTabs()[tabId]) {
+      delete state.doc.tabs[tabId];
+      ensureLocalTabState(tabId, { text: "", persisted: false });
+      if (tabId === state.activeTabId) setEditorValue("");
+    }
+    scheduleEditingRelease(tabId);
+    lockUI(false);
+    return true;
+  })();
+  state.acquiring.set(tabId, acquisition);
+  try {
+    return await acquisition;
+  } finally {
+    state.acquiring.delete(tabId);
+  }
+}
+
+function scheduleEditingRelease(tabId) {
+  clearTimeout(state.idleTimers.get(tabId));
+  state.idleTimers.set(tabId, setTimeout(() => {
+    state.idleTimers.delete(tabId);
+    if (state.composingTabId === tabId) {
+      scheduleEditingRelease(tabId);
+      return;
+    }
+    releaseTabEditing(tabId).catch(reportSyncError);
+  }, 1500));
+}
+
+async function releaseTabEditing(tabId) {
+  if (!tabId) return;
+  if (state.releasing.has(tabId)) return state.releasing.get(tabId);
+  const releasing = (async () => {
+    // Flush the last edit before handing ownership to another connection.
+    await Promise.resolve();
+    lockUI(!state.key);
+    clearTimeout(state.saveTimers.get(tabId));
+    state.saveTimers.delete(tabId);
+    clearTimeout(state.idleTimers.get(tabId));
+    state.idleTimers.delete(tabId);
+    if (state.acquiring.has(tabId)) await state.acquiring.get(tabId);
+    if (state.dirtyTabs.has(tabId)) await upsertTabState(tabId);
+    if (state.saves.has(tabId)) await state.saves.get(tabId);
+    if (state.dirtyTabs.has(tabId)) return;
+    const lockToken = state.ownedLocks.get(tabId);
+    if (lockToken) {
+      state.handoffs.add(tabId);
+      state.ownedLocks.delete(tabId);
+      await requestWs({ type: "releaseTab", tabId, lockToken });
+    }
+  })();
+  state.releasing.set(tabId, releasing);
+  try {
+    await releasing;
+  } finally {
+    state.handoffs.delete(tabId);
+    state.releasing.delete(tabId);
+    lockUI(!state.key);
+  }
 }
 
 async function flushDirtyTabs() {
@@ -552,35 +727,17 @@ async function syncMissingTabs(preferTabId = null) {
   }
 }
 
-async function applyDocEmptied(tabId, entry, options = {}) {
-  const previous = state.tabs.get(tabId) || { name: DEFAULT_TAB_NAME };
-  let name = previous.name || DEFAULT_TAB_NAME;
-
-  if (state.key && entry?.nameIv && entry?.nameCt) {
-    try {
-      name = await decryptLabel(entry);
-    } catch {
-      // keep existing label if we cannot decrypt the incoming one
-    }
-  }
-
-  state.doc = newEmptyDoc();
-  state.docExists = false;
-  state.doc.kdf = state.kdf;
-  state.doc.meta.initialTabId = tabId;
-  state.tabs.clear();
-  state.tabs.set(tabId, { name, text: "", ts: 0, persisted: false });
-  state.activeTabId = tabId;
-  setEditorValue("");
-  renderTabs();
-  setStatus(options.fromSelf ? "Cleared." : "Cleared remotely.", options.fromSelf ? "status-ok" : "status-warn");
-}
-
 function genericLockedLabel(index) {
   return `encrypted tab ${index + 1}`;
 }
 
 function clearPlaintextState() {
+  for (const timer of state.saveTimers.values()) clearTimeout(timer);
+  for (const timer of state.idleTimers.values()) clearTimeout(timer);
+  state.saveTimers.clear();
+  state.idleTimers.clear();
+  state.ownedLocks.clear();
+  state.editBases.clear();
   state.tabs.clear();
   state.dirtyTabs.clear();
   state.activeTabId = null;
@@ -754,7 +911,7 @@ function renderTabs() {
     edit.className = "tab-edit";
     edit.innerHTML = EDIT_ICON;
     edit.title = isEditing ? "Finish renaming" : "Rename tab";
-    if (!canEdit() || isEditing) edit.classList.add("disabled");
+    if (!canEdit() || isEditing || state.unavailableTabs.has(tabId)) edit.classList.add("disabled");
     edit.onclick = (ev) => {
       ev.stopPropagation();
       if (!canEdit() || edit.classList.contains("disabled")) return;
@@ -767,7 +924,7 @@ function renderTabs() {
     if (armedDelete) close.classList.add("armed");
     close.innerHTML = armedDelete ? DELETE_CONFIRM_ICON : DELETE_ICON;
     close.title = protectedTab ? "The first tab cannot be deleted" : armedDelete ? "Click again to delete tab" : "Delete tab";
-    if (!canEdit() || protectedTab || isEditing) close.classList.add("disabled");
+    if (!canEdit() || protectedTab || isEditing || state.unavailableTabs.has(tabId)) close.classList.add("disabled");
     close.onclick = (ev) => {
       ev.stopPropagation();
       if (!canEdit() || close.classList.contains("disabled")) return;
@@ -813,6 +970,7 @@ function renderTabs() {
       setStatus("Enter a password to add tabs.", "status-warn");
       return;
     }
+    releaseTabEditing(state.activeTabId).catch(reportSyncError);
     const name = nextSuggestedTabName();
     const tabId = crypto.randomUUID();
     ensureLocalTabState(tabId, { name, text: "", ts: 0, persisted: false });
@@ -820,6 +978,7 @@ function renderTabs() {
     state.editingTabId = tabId;
     renderTabs();
     setEditorValue("");
+    lockUI(false);
     requestAnimationFrame(() => {
       const input = tabsEl.querySelector(`[data-rename-input-for="${tabId}"]`);
       input?.focus();
@@ -861,8 +1020,12 @@ async function deleteTabFlow(tabId) {
     return;
   }
 
-  if (!sendWsMessage({ type: "deleteTab", tabId, auth: state.authToken })) {
-    return;
+  if (!await requestTabLock(tabId)) return;
+  try {
+    if (state.dirtyTabs.has(tabId)) await upsertTabState(tabId);
+    await requestWs({ type: "deleteTab", tabId, auth: state.authToken, lockToken: state.ownedLocks.get(tabId) });
+  } finally {
+    await releaseTabEditing(tabId);
   }
 }
 
@@ -880,29 +1043,12 @@ async function renameTabFlow(tabId, requestedName) {
     return;
   }
 
-  const oldName = tab.name;
+  if (!await requestTabLock(tabId)) return;
   ensureLocalTabState(tabId, { name: newName });
   renderTabs();
-
-  if (!tab.persisted) {
-    syncMissingTabs(tabId).catch((err) => {
-      console.error(err);
-      restorePendingRename();
-      setStatus("Tab rename failed.", "status-err");
-    });
-    setStatus(`Renamed tab to "${newName}".`, "status-ok");
-    return;
-  }
-
-  state.pendingRename = { tabId, oldName };
-  const labelEntry = await encryptLabel(newName);
-  if (!sendWsMessage({ type: "upsertTab", tabId, entry: labelEntry, auth: state.authToken })) {
-    ensureLocalTabState(tabId, { name: oldName });
-    state.pendingRename = null;
-    renderTabs();
-  } else {
-    setStatus("Renaming...", "status-warn");
-  }
+  queueSaveForTab(tabId, getTabText(tabId));
+  await upsertTabState(tabId);
+  setStatus(`Renamed tab to "${newName}".`, "status-ok");
 }
 
 function restorePendingRename() {
@@ -919,7 +1065,7 @@ function isWsOpen() {
 }
 
 function shouldReconnectWs() {
-  return !!state.authToken;
+  return !!state.authToken && !state.syncUnsupported;
 }
 
 function scheduleReconnect() {
@@ -944,6 +1090,7 @@ function sendWsMessage(message) {
 }
 
 async function connectWs() {
+  if (state.syncUnsupported) return;
   if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
     return;
   }
@@ -978,6 +1125,19 @@ async function connectWs() {
 
     ws.onclose = () => {
       if (state.ws !== ws) return;
+      state.wsReady = false;
+      state.ownedLocks.clear();
+      state.unavailableTabs.clear();
+      for (const pending of state.requests.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(new Error("Disconnected"));
+      }
+      state.requests.clear();
+      lockUI(!state.key);
+      if (state.syncUnsupported) {
+        finish();
+        return;
+      }
       if (authed) {
         setStatus("Disconnected. Reconnecting...", "status-warn");
       }
@@ -990,18 +1150,41 @@ async function connectWs() {
       setStatus("WebSocket error.", "status-err");
     };
 
-    ws.onmessage = async (ev) => {
+    const handleMessage = async (ev) => {
       if (state.ws !== ws) return;
       const msg = JSON.parse(ev.data);
 
       if (msg.type === "authOk") {
         if (state.ws !== ws) return;
+        if (msg.syncProtocol !== "tab-locks-v1") {
+          state.syncUnsupported = true;
+          state.wsReady = false;
+          lockUI(!state.key);
+          setStatus("Server update required. Restart yarn start, then reload this page.", "status-warn");
+          ws.close(4002, "Sync protocol mismatch");
+          finish();
+          return;
+        }
         authed = true;
+        state.wsReady = true;
+        state.unavailableTabs = new Set(msg.lockedTabs || []);
+        if (msg.doc) {
+          for (const [tabId, entry] of Object.entries(msg.doc.tabs || {})) {
+            await applyEncryptedTab(tabId, entry);
+          }
+          for (const tabId of Object.keys(getPersistedTabs())) {
+            if (msg.doc.tabs?.[tabId]) continue;
+            preservePendingDraft(tabId);
+            removeTabLocally(tabId);
+          }
+          state.doc.meta = msg.doc.meta;
+        }
         if (state.reconnectTimer) {
           clearTimeout(state.reconnectTimer);
           state.reconnectTimer = null;
         }
         setStatus("Connected.", "status-ok");
+        lockUI(!state.key);
         flushDirtyTabs().catch((err) => {
           console.error(err);
           setStatus("Failed to sync pending changes.", "status-err");
@@ -1032,9 +1215,6 @@ async function connectWs() {
         return;
       } else if (msg.type === "serverError") {
         setStatus("The server hit an unexpected error. Reconnecting...", "status-err");
-        if (state.ws === ws) {
-          state.ws = null;
-        }
         try {
           ws.close(1011, "Server error");
         } catch {
@@ -1046,16 +1226,24 @@ async function connectWs() {
 
       if (!authed) return;
 
+      if (["lockGranted", "lockDenied", "releaseAck"].includes(msg.type)) {
+        finishRequest(msg);
+        return;
+      }
+      if (msg.type === "tabLock") {
+        if (msg.locked && !state.ownedLocks.has(msg.tabId)) state.unavailableTabs.add(msg.tabId);
+        if (!msg.locked) state.unavailableTabs.delete(msg.tabId);
+        lockUI(!state.key);
+        return;
+      }
+
       if (msg.type === "upsertTab" || msg.type === "upsertAck") {
-        if (msg.emptied) {
-          await applyDocEmptied(msg.tabId, msg.entry, { fromSelf: msg.type === "upsertAck" });
-          return;
-        }
         await applyEncryptedTab(msg.tabId, msg.entry, {
-          fromSelf: msg.type === "upsertAck",
-          updateActiveContent: msg.tabId === state.activeTabId
+          fromSelf: msg.type === "upsertAck"
         });
+        finishRequest(msg);
       } else if (msg.type === "deleteAck" || msg.type === "deleteTab") {
+        if (msg.type === "deleteTab") preservePendingDraft(msg.tabId);
         removeTabLocally(msg.tabId);
         if (msg.emptied) {
           state.docExists = false;
@@ -1065,6 +1253,9 @@ async function connectWs() {
         ensureInitialTabExists();
         renderTabs();
         setStatus(msg.type === "deleteAck" ? "Cleared." : "Cleared remotely.", msg.type === "deleteAck" ? "status-ok" : "status-warn");
+        renderActiveTab();
+        lockUI(!state.key);
+        finishRequest(msg);
       } else if (msg.type === "rekey") {
         const pr = state.pendingRotate;
         if (pr) {
@@ -1073,7 +1264,7 @@ async function connectWs() {
           state.authToken = pr.newAuthToken;
           if (!state.doc) state.doc = newEmptyDoc();
           state.doc.kdf = pr.newKdf;
-          state.doc.tabs = pr.newTabs;
+          state.doc.tabs = msg.tabs;
           state.pendingRotate = null;
           state.tabs.clear();
           ensureInitialTabExists();
@@ -1093,12 +1284,24 @@ async function connectWs() {
           setStatus("Document password changed. Enter the new password to continue.", "status-warn");
           lockUI(true);
         }
+        finishRequest(msg);
       } else if (msg.type === "rekeyAck") {
         // no-op
+      } else if (msg.type === "rotateError") {
+        state.pendingRotate = null;
+        lockUI(!state.key);
+        setStatus("Password unchanged. Another client is editing or the document changed.", "status-warn");
+        finishRequest({ ...msg, type: "tabError" });
       } else if (msg.type === "tabError") {
+        finishRequest(msg);
         restorePendingRename();
         setStatus(msg.reason === "protectedTab" ? "The first tab cannot be deleted." : "Tab update failed.", msg.reason === "protectedTab" ? "status-warn" : "status-err");
       }
+    };
+    // Decryption is asynchronous; preserve wire order across messages.
+    let messages = Promise.resolve();
+    ws.onmessage = (ev) => {
+      messages = messages.then(() => handleMessage(ev)).catch(reportSyncError);
     };
   });
 }
@@ -1109,43 +1312,55 @@ async function applyEncryptedTab(tabId, entry, options = {}) {
   state.doc.tabs[tabId] = entry;
 
   const existing = state.tabs.get(tabId) || { name: "", text: "", ts: 0, persisted: true };
-  const next = { ...existing, persisted: true, ts: entry.ts || existing.ts || 0 };
+  let name = existing.name;
+  let text = existing.text;
+  const key = state.key;
 
   if (state.key && entry.nameIv && entry.nameCt) {
     try {
-      next.name = await decryptLabel(entry);
+      name = await decryptLabel(entry, key);
     } catch {
-      next.name = existing.name || next.name || "tab";
+      name = existing.name || "tab";
     }
   }
 
-  if (entry.iv && entry.ct) {
-    if (options.updateActiveContent && state.key) {
+  if (!options.fromSelf && key) {
+    if (entry.iv && entry.ct) {
       try {
-        const text =
+        text =
           typeof decryptAndUnpack === "function"
-            ? await decryptAndUnpack(state.key, b64dec(entry.iv), b64dec(entry.ct))
-            : await decryptGCM(state.key, b64dec(entry.iv), b64dec(entry.ct));
-        next.text = text;
-        if (tabId === state.activeTabId) setEditorValue(text);
+            ? await decryptAndUnpack(key, b64dec(entry.iv), b64dec(entry.ct))
+            : await decryptGCM(key, b64dec(entry.iv), b64dec(entry.ct));
       } catch {
-        next.text = "";
-        if (tabId === state.activeTabId) setEditorValue("");
+        setStatus("Unable to decrypt an update. Local text has been retained.", "status-err");
+        return;
       }
+    } else {
+      text = "";
     }
-  } else {
-    next.text = "";
-    next.ts = entry.ts || 0;
-    if (tabId === state.activeTabId) setEditorValue("");
   }
-
+  if (state.key !== key || getPersistedTabs()[tabId] !== entry) return;
+  const preserveLocal = options.fromSelf || state.dirtyTabs.has(tabId);
+  const next = { ...(state.tabs.get(tabId) || existing), persisted: true, ts: entry.ts || 0 };
+  if (!preserveLocal) {
+    next.name = name;
+    next.text = text;
+    if (tabId === state.activeTabId && editor.value !== text) {
+      const { selectionStart, selectionEnd, selectionDirection, scrollTop, scrollLeft } = editor;
+      setEditorValue(text);
+      editor.setSelectionRange(Math.min(selectionStart, text.length), Math.min(selectionEnd, text.length), selectionDirection);
+      editor.scrollTop = scrollTop;
+      editor.scrollLeft = scrollLeft;
+    }
+  }
+  const tabsChanged = !state.tabs.has(tabId) || state.tabs.get(tabId).name !== next.name || !state.activeTabId;
   state.tabs.set(tabId, next);
   if (!state.activeTabId) state.activeTabId = tabId;
   if (!getInitialTabId()) state.doc.meta.initialTabId = tabId;
-  renderTabs();
+  if (tabsChanged) renderTabs();
 
   if (!options.fromSelf && tabId === state.activeTabId && state.key) {
-    setStatus(`Updated from another client (${next.name || "tab"}).`, "status-warn");
+    setStatus("Synced.", "status-ok");
   } else if (options.fromSelf && state.pendingRename?.tabId === tabId) {
     state.pendingRename = null;
     setStatus(`Renamed tab to "${next.name}".`, "status-ok");
@@ -1204,8 +1419,11 @@ async function hydrateTabsFromCipher() {
   for (const [tabId, entry] of Object.entries(tabs)) {
     try {
       const name = await decryptLabel(entry);
-      const existing = state.tabs.get(tabId) || { text: "", ts: entry.ts || 0 };
-      state.tabs.set(tabId, { ...existing, name, text: entry.iv && entry.ct ? existing.text || "" : "", ts: entry.ts || 0, persisted: true });
+      const decrypted = entry.iv && entry.ct ? await tryDecryptWithKey(state.key, entry) : { ok: true, text: "" };
+      if (!decrypted.ok) continue;
+      const existing = state.tabs.get(tabId) || {};
+      state.tabs.set(tabId, { ...existing, name, text: state.dirtyTabs.has(tabId) ? existing.text : decrypted.text,
+        ts: entry.ts || 0, persisted: true });
     } catch {
       // keep going; wrong password check already happened before hydrate
     }
@@ -1328,16 +1546,14 @@ async function unlockWithPassword() {
 
   state.key = testKey;
   state.authToken = testAuthToken;
-  connectWs().catch((err) => {
-    console.error(err);
-    scheduleReconnect();
-  });
   passwordInput.value = "";
   await hydrateTabsFromCipher();
   await hydrateActiveTabFromCipher();
+  await connectWs();
+  if (!state.key || state.syncUnsupported) return;
   setStatus("Key ready.", "status-ok");
   lockUI(false);
-  focusEditorAtTrailingBlankLine(state.activeTabId);
+  focusEditorAtEnd();
 }
 
 async function changePassword() {
@@ -1352,6 +1568,30 @@ async function changePassword() {
     return;
   }
 
+  if (state.rotating) return;
+  state.rotating = true;
+  lockUI(false);
+  try {
+    // Hold every tab while taking and replacing the encrypted snapshot.
+    for (const tabId of getAllTabIds()) {
+      if (state.releasing.has(tabId)) await state.releasing.get(tabId);
+      if (!await requestTabLock(tabId)) {
+        setStatus("Password unchanged. Another client is editing.", "status-warn");
+        return;
+      }
+      clearTimeout(state.idleTimers.get(tabId));
+      state.idleTimers.delete(tabId);
+      if (state.dirtyTabs.has(tabId)) await upsertTabState(tabId);
+    }
+    await rotatePassword(newPass);
+  } finally {
+    state.rotating = false;
+    for (const tabId of state.ownedLocks.keys()) scheduleEditingRelease(tabId);
+    lockUI(!state.key);
+  }
+}
+
+async function rotatePassword(newPass) {
   const persistedIds = Object.keys(getPersistedTabs());
   if (persistedIds.length > 0) {
     const okOld = await canKeyOpenPersistedTabs(state.key);
@@ -1410,12 +1650,15 @@ async function changePassword() {
   }
 
   state.pendingRotate = { newKdf, newKey, newTabs, newAuthToken };
-  if (sendWsMessage({ type: "rotateKdf", kdf: newKdf, tabs: newTabs, auth: state.authToken, nextAuth: newAuthToken, initialTabId: getInitialTabId() })) {
+  try {
+    await requestWs({ type: "rotateKdf", kdf: newKdf, tabs: newTabs, auth: state.authToken,
+      nextAuth: newAuthToken, initialTabId: getInitialTabId(),
+      lockTokens: Object.fromEntries(state.ownedLocks),
+      revisions: Object.fromEntries(Object.entries(getPersistedTabs()).map(([id, entry]) => [id, entry.revision || null])) });
     closeChangePasswordPanel();
-    setStatus("Updating password...", "status-warn");
-  } else {
+  } catch (err) {
     state.pendingRotate = null;
-    setStatus("Password update is waiting for reconnection.", "status-warn");
+    throw err;
   }
 }
 
@@ -1473,18 +1716,19 @@ themeToggleBtn.addEventListener("click", () => {
   applyTheme(next);
 });
 
-async function sendUpdate(tabId, text) {
+async function sendUpdate(tabId) {
   if (!state.key || !tabId) return;
-  const ok = await upsertTabState(tabId, text);
+  const ok = await upsertTabState(tabId);
   if (!ok) return;
   await syncMissingTabs(tabId);
-  setStatus("Saved.", "status-ok");
+  setStatus(state.dirtyTabs.size ? "Saving pending changes..." : "Saved.", state.dirtyTabs.size ? "status-warn" : "status-ok");
 }
 
 editor.addEventListener("input", () => {
   updateLineNumbers();
-  if (!canEdit()) {
-    setStatus("Enter a password to edit.", "status-warn");
+  if (!canEditTab(state.activeTabId)) {
+    renderActiveTab();
+    showEditingStatus();
     return;
   }
   if (!state.activeTabId) {
@@ -1494,14 +1738,20 @@ editor.addEventListener("input", () => {
   }
   const tabId = state.activeTabId;
   const text = editor.value;
-  ensureLocalTabState(tabId, { text });
-  clearTimeout(state.debounceTimer);
-  state.debounceTimer = setTimeout(() => {
-    sendUpdate(tabId, text).catch((err) => {
-      console.error(err);
-      setStatus("Save failed.", "status-err");
-    });
-  }, 450);
+  queueSaveForTab(tabId, text);
+});
+
+editor.addEventListener("compositionstart", () => { state.composingTabId = state.activeTabId; });
+editor.addEventListener("compositionend", () => {
+  state.composingTabId = null;
+  if (state.activeTabId) scheduleEditingRelease(state.activeTabId);
+});
+editor.addEventListener("blur", () => releaseTabEditing(state.activeTabId).catch(reportSyncError));
+window.addEventListener("blur", () => releaseTabEditing(state.activeTabId).catch(reportSyncError));
+window.addEventListener("beforeunload", (event) => {
+  if (!state.dirtyTabs.size) return;
+  event.preventDefault();
+  event.returnValue = "";
 });
 
 editor.addEventListener("scroll", syncLineNumberScroll);
@@ -1511,27 +1761,12 @@ window.addEventListener("resize", updateLineNumbers);
 async function switchTab(tabId) {
   resetPendingDelete(false);
   cancelInlineRename(false);
+  if (state.activeTabId !== tabId) releaseTabEditing(state.activeTabId).catch(reportSyncError);
   state.activeTabId = tabId;
   renderTabs();
-  const local = state.tabs.get(tabId);
-  const slot = getPersistedTabs()[tabId];
-  if (slot && state.key && slot.iv && slot.ct) {
-    try {
-      const text =
-        typeof decryptAndUnpack === "function"
-          ? await decryptAndUnpack(state.key, b64dec(slot.iv), b64dec(slot.ct))
-          : await decryptGCM(state.key, b64dec(slot.iv), b64dec(slot.ct));
-      ensureLocalTabState(tabId, { text, ts: slot.ts || 0, persisted: true });
-      setEditorValue(text);
-    } catch {
-      setStatus("Unable to decrypt this tab with your password.", "status-err");
-      setEditorValue("");
-    }
-  } else {
-    setEditorValue(slot ? "" : local?.text || "");
-    if (slot) ensureLocalTabState(tabId, { text: "", ts: slot.ts || 0, persisted: true });
-  }
-  focusEditorAtTrailingBlankLine(tabId);
+  renderActiveTab();
+  lockUI(!state.key);
+  focusEditorAtEnd();
 }
 
 document.addEventListener("click", (ev) => {
