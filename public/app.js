@@ -394,7 +394,7 @@ const tabSearch = createTabSearch({
     measure.style.whiteSpace = editor.classList.contains("wrap-enabled") ? "pre-wrap" : "pre";
     measure.textContent = editor.value.slice(0, match.start);
     const marker = document.createElement("span");
-    marker.textContent = editor.value.slice(match.start, match.end);
+    marker.textContent = editor.value.slice(match.start, match.start + 1);
     measure.appendChild(marker);
     const position = marker.getBoundingClientRect();
     const origin = measure.getBoundingClientRect();

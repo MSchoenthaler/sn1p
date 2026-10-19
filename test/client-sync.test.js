@@ -405,6 +405,36 @@ test("search highlights preserve the caret and update without replacing matched 
   assert.equal(descendants(layer).filter((el) => el.classList.contains("editor-search-match")).length, 0);
 });
 
+test("wildcard results highlight full multiline spans and keep navigation in search", async (t) => {
+  const { a, tabId } = await pair(t);
+  const first = "select\n" + "column_name,\n".repeat(20) + "id from";
+  const text = first + " users;\nselect * from other;";
+  a.input(text, 3);
+  await a.upsertTabState(tabId);
+  const input = a.element("#tab-search");
+  input.value = "select*from";
+  input.focus();
+  input.dispatch("input");
+  assert.equal(a.element("#search-summary").textContent, "2 matches in 1 tab");
+  const highlights = descendants(a.element("#editor-search-highlights"))
+    .filter((el) => el.classList.contains("editor-search-match"));
+  assert.deepEqual(highlights.map((el) => el.textContent), [first, "select * from"]);
+  const snippet = descendants(a.element("#search-results")).find((el) => el.className === "search-snippet");
+  assert.ok(snippet.children[1].textContent.length <= 99);
+  assert.equal(snippet.children[1].textContent.includes("\n"), false);
+  for (const start of [0, text.indexOf("select * from"), 0]) {
+    input.dispatch("keydown", { key: "Enter", preventDefault() {} });
+    await until(() => currentHighlight(a)?.dataset.start === String(start));
+    assert.equal(a.focused(), input);
+    assert.equal(a.editor.selectionStart, 3);
+    assert.equal(a.editor.selectionEnd, 3);
+  }
+  input.value = String.raw`select \* from`;
+  input.dispatch("input");
+  assert.equal(a.element("#search-summary").textContent, "1 match in 1 tab");
+  assert.equal(a.editor.value, text);
+});
+
 test("Tab indentation preserves selection and scroll, saves, and reaches the other client", async (t) => {
   const { a, b, tabId } = await pair(t);
   const cases = [

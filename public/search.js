@@ -1,14 +1,51 @@
 /* Local search over unlocked tab names and content. */
+function compileSearchQuery(query) {
+  const parts = [""];
+  const characters = Array.from(query);
+  for (let i = 0; i < characters.length; i++) {
+    let character = characters[i];
+    if (character === "\\" && ["*", "?", "\\"].includes(characters[i + 1])) {
+      character = characters[++i];
+    } else if (character === "*") {
+      if (parts[parts.length - 1] || parts.length === 1) parts.push("");
+      continue;
+    } else if (character === "?") {
+      parts[parts.length - 1] += "[\\s\\S]";
+      continue;
+    }
+    parts[parts.length - 1] += character.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  }
+  return parts.map((part) => new RegExp(part, "giu"));
+}
+
+function* findSearchMatches(text, parts) {
+  if (parts.every((part) => part.source === "(?:)")) return;
+  let cursor = 0;
+  while (cursor <= text.length) {
+    let start = cursor;
+    // Each part has fixed character width. Finding successive earliest matches
+    // gives a shortest match without backtracking across multiple wildcards.
+    for (let i = 0; i < parts.length; i++) {
+      parts[i].lastIndex = cursor;
+      const match = parts[i].exec(text);
+      if (!match) return;
+      if (i === 0) start = match.index;
+      cursor = match.index + match[0].length;
+    }
+    yield { index: start, 0: text.slice(start, cursor) };
+  }
+}
+
 function findTabMatches(tabs, query) {
   if (!query) return [];
-  const pattern = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const parts = compileSearchQuery(query);
   const groups = [];
   for (const tab of tabs) {
     const matches = [];
     let line = 1;
     let lineStart = 0;
     let newline = tab.text.indexOf("\n");
-    for (const match of tab.text.matchAll(new RegExp(pattern, "giu"))) {
+    for (const match of findSearchMatches(tab.text, parts)) {
       while (newline !== -1 && newline < match.index) {
         line++;
         lineStart = newline + 1;
@@ -23,7 +60,7 @@ function findTabMatches(tabs, query) {
         before: (from > lineStart ? "..." : "") + tab.text.slice(from, start),
         hit: match[0], after: tab.text.slice(end, to) + (to < (lineEnd === -1 ? tab.text.length : lineEnd) ? "..." : "") });
     }
-    const nameMatch = new RegExp(pattern, "iu").test(tab.name);
+    const nameMatch = !findSearchMatches(tab.name, parts).next().done;
     if (matches.length || nameMatch) groups.push({ ...tab, matches, nameMatch });
   }
   return groups.sort((a, b) => Number(b.matches.length > 0) - Number(a.matches.length > 0));
@@ -159,18 +196,21 @@ function createTabSearch({ getTabs, isUnlocked, selectMatch, onError, onChange =
       if (focusedKey === heading.dataset.searchKey) restoreFocus = heading;
       const visible = expanded.has(group.id) ? group.matches : group.matches.slice(0, 3);
       for (const match of visible) {
+        const compactHit = match.hit.replace(/[\r\n]+/g, " ");
+        const previewHit = compactHit.length > 96 ? compactHit.slice(0, 96) + "..." : compactHit;
+        const preview = `${match.before}${previewHit}${match.after}`;
         const button = node("button", "search-match");
         button.type = "button";
         button.dataset.searchKey = `${group.id}:${match.start}`;
-        button.setAttribute("aria-label", `${group.name}, line ${match.line}: ${match.before}${match.hit}${match.after}`);
+        button.setAttribute("aria-label", `${group.name}, line ${match.line}: ${preview}`);
         if (selected?.tabId === match.tabId && selected.start === match.start) button.setAttribute("aria-current", "true");
         button.appendChild(node("span", "search-line", String(match.line)));
         const snippet = node("span", "search-snippet");
         snippet.appendChild(node("span", "", match.before));
-        snippet.appendChild(node("mark", "", match.hit));
+        snippet.appendChild(node("mark", "", previewHit));
         snippet.appendChild(node("span", "", match.after));
         button.appendChild(snippet);
-        button.title = `${match.before}${match.hit}${match.after}`;
+        button.title = preview;
         button.onclick = () => openMatch(match).catch(onError);
         section.appendChild(button);
         if (focusedKey === button.dataset.searchKey) restoreFocus = button;
