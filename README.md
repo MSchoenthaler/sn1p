@@ -201,6 +201,8 @@ Example:
 
 ## Notes
 
+- In the editor, Tab inserts two spaces at the caret or indents every selected line by two spaces. Shift+Tab removes up to two leading spaces (or one existing tab character) from each affected line. A selection ending at the start of a line leaves that line unchanged.
+- Press Escape, then Tab (or Shift+Tab), to move keyboard focus out of the editor. Read-only editors retain normal Tab navigation.
 - The wrap mode toggle is a local browser preference and is remembered with `localStorage`.
 - The editor focuses at the end after unlock and tab switches without inserting text into a shared note.
 - The UI is intentionally file-free from the user perspective; import/export has been removed.

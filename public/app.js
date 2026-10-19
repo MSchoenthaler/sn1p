@@ -1724,7 +1724,7 @@ async function sendUpdate(tabId) {
   setStatus(state.dirtyTabs.size ? "Saving pending changes..." : "Saved.", state.dirtyTabs.size ? "status-warn" : "status-ok");
 }
 
-editor.addEventListener("input", () => {
+function handleEditorInput() {
   updateLineNumbers();
   if (!canEditTab(state.activeTabId)) {
     renderActiveTab();
@@ -1739,7 +1739,59 @@ editor.addEventListener("input", () => {
   const tabId = state.activeTabId;
   const text = editor.value;
   queueSaveForTab(tabId, text);
+}
+
+function indentEditor(outdent) {
+  const { value, selectionStart: start, selectionEnd: end, selectionDirection, scrollTop, scrollLeft } = editor;
+  let from = start;
+  let to = end;
+  let replacement = "  ";
+  let nextStart = start + 2;
+  let nextEnd = nextStart;
+
+  if (outdent || start !== end) {
+    from = value.slice(0, start).lastIndexOf("\n") + 1;
+    // A selection ending at the next line's start does not include that line.
+    to = value.indexOf("\n", end > start ? end - 1 : start);
+    if (to === -1) to = value.length;
+    const lines = value.slice(from, to).split("\n");
+    let totalDelta = 0;
+    let lineOffset = from;
+    replacement = lines.map((line, index) => {
+      const removed = outdent ? (line.match(/^(?: {1,2}|\t)/)?.[0].length || 0) : 0;
+      const delta = outdent ? -Math.min(removed, Math.max(0, end - lineOffset)) : 2;
+      totalDelta += delta;
+      if (index === 0) nextStart = start + (outdent ? -Math.min(start - from, removed) : 2);
+      lineOffset += line.length + 1;
+      return outdent ? line.slice(removed) : "  " + line;
+    }).join("\n");
+    nextEnd = start === end ? nextStart : end + totalDelta;
+  }
+  if (replacement === value.slice(from, to)) return;
+
+  editor.setSelectionRange(from, to);
+  // Native insertText retains undo history where supported; range replacement
+  // is the fallback for browsers without this legacy editing command.
+  let inserted = false;
+  try { inserted = document.execCommand?.("insertText", false, replacement); } catch {}
+  if (!inserted) editor.setRangeText(replacement, from, to);
+  editor.setSelectionRange(nextStart, nextEnd, selectionDirection);
+  editor.scrollTop = scrollTop;
+  editor.scrollLeft = scrollLeft;
+  handleEditorInput();
+}
+
+let allowTabNavigation = false;
+editor.addEventListener("keydown", (event) => {
+  const navigate = allowTabNavigation;
+  allowTabNavigation = event.key === "Escape";
+  if (event.key !== "Tab" || navigate || event.ctrlKey || event.metaKey || event.altKey ||
+      event.isComposing || state.composingTabId || editor.readOnly || !canEditTab(state.activeTabId)) return;
+  event.preventDefault();
+  indentEditor(event.shiftKey);
 });
+editor.addEventListener("blur", () => { allowTabNavigation = false; });
+editor.addEventListener("input", handleEditorInput);
 
 editor.addEventListener("compositionstart", () => { state.composingTabId = state.activeTabId; });
 editor.addEventListener("compositionend", () => {

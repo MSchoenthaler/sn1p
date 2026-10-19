@@ -37,7 +37,8 @@ class Element {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
     this.listeners.get(type).push(listener);
   }
-  dispatch(type) { for (const listener of this.listeners.get(type) || []) listener({}); }
+  dispatch(type, event = {}) { for (const listener of this.listeners.get(type) || []) listener(event); }
+  setRangeText(text, start, end) { this.value = this.value.slice(0, start) + text + this.value.slice(end); }
   setSelectionRange(start, end, direction = "none") { Object.assign(this, { selectionStart: start, selectionEnd: end, selectionDirection: direction }); }
   setAttribute() {}
   removeAttribute() {}
@@ -138,6 +139,72 @@ async function pair(t) {
   return { a, b, tabId };
 }
 
+function pressEditorKey(client, key = "Tab", options = {}) {
+  const event = { key, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; }, ...options };
+  client.editor.dispatch("keydown", event);
+  return event.defaultPrevented;
+}
+
+test("Tab indentation preserves selection and scroll, saves, and reaches the other client", async (t) => {
+  const { a, b, tabId } = await pair(t);
+  const cases = [
+    { text: "abc", start: 1, end: 1, expected: "a  bc", selection: [3, 3] },
+    { text: "", start: 0, end: 0, expected: "  ", selection: [2, 2] },
+    { text: "abc\ndef\nghi", start: 1, end: 5, expected: "  abc\n  def\nghi", selection: [3, 9] },
+    { text: "abc\ndef\nghi", start: 0, end: 4, expected: "  abc\ndef\nghi", selection: [2, 6] },
+    { text: "\nabc\n", start: 0, end: 5, expected: "  \n  abc\n", selection: [2, 9] },
+    { text: "abc", start: 1, end: 2, expected: "  abc", selection: [3, 4] },
+    { text: "  abc\n def\n\tghi\njkl", start: 0, end: 19, shiftKey: true, expected: "abc\ndef\nghi\njkl", selection: [0, 15] },
+    { text: "  abc", start: 1, end: 1, shiftKey: true, expected: "abc", selection: [0, 0] },
+    { text: "  abc\n  def", start: 1, end: 7, shiftKey: true, expected: "abc\ndef", selection: [0, 4] },
+    { text: "  abc", start: 0, end: 1, shiftKey: true, expected: "abc", selection: [0, 0] },
+    { text: "abc", start: 1, end: 1, shiftKey: true, expected: "abc", selection: [1, 1] },
+  ];
+  for (const c of cases) {
+    a.input(c.text);
+    a.editor.setSelectionRange(c.start, c.end, "backward");
+    a.editor.scrollTop = 120;
+    a.editor.scrollLeft = 30;
+    assert.equal(pressEditorKey(a, "Tab", { shiftKey: !!c.shiftKey }), true);
+    assert.equal(a.editor.value, c.expected);
+    assert.deepEqual([a.editor.selectionStart, a.editor.selectionEnd], c.selection);
+    assert.equal(a.editor.selectionDirection, "backward");
+    assert.equal(a.editor.scrollTop, 120);
+    assert.equal(a.editor.scrollLeft, 30);
+    await a.upsertTabState(tabId);
+    await until(() => b.editor.value === c.expected);
+    assert.deepEqual([a.editor.selectionStart, a.editor.selectionEnd], c.selection);
+  }
+  a.input("one\ntwo");
+  a.editor.setSelectionRange(0, 7);
+  pressEditorKey(a);
+  pressEditorKey(a);
+  assert.equal(a.editor.value, "    one\n    two");
+  pressEditorKey(a, "Tab", { shiftKey: true });
+  assert.equal(a.editor.value, "  one\n  two");
+  await a.upsertTabState(tabId);
+  await until(() => b.editor.value === a.editor.value);
+});
+
+test("Tab respects read-only, composition, modifiers, and Escape keyboard navigation", async (t) => {
+  const { a, b } = await pair(t);
+  assert.equal(b.editor.readOnly, true);
+  assert.equal(pressEditorKey(b), false);
+  assert.equal(b.editor.value, "original");
+  for (const options of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { isComposing: true }]) {
+    assert.equal(pressEditorKey(a, "Tab", options), false);
+    assert.equal(a.editor.value, "original");
+  }
+  a.editor.dispatch("compositionstart");
+  assert.equal(pressEditorKey(a), false);
+  a.editor.dispatch("compositionend");
+  pressEditorKey(a, "Escape");
+  assert.equal(pressEditorKey(a), false);
+  assert.equal(a.editor.value, "original");
+  assert.equal(pressEditorKey(a), true);
+  await a.upsertTabState(a.state.activeTabId);
+});
+
 test("two open clients: reader sees edits, caret survives acks, debounce releases ownership", async (t) => {
   const { a, b, tabId } = await pair(t);
   assert.equal(b.editor.readOnly, true);
@@ -199,6 +266,7 @@ test("reconnection retains an unsent draft when another owner has changed the ta
   await b.releaseTabEditing(tabId);
   await until(() => a.state.wsReady);
   await until(() => [...a.state.tabs.values()].some((tab) => tab.text === "unsent draft" && tab.name.endsWith("(recovered)")));
+  await until(() => a.editor.value === "new owner text" && a.state.dirtyTabs.size === 0);
   assert.equal(a.editor.value, "new owner text");
 });
 
