@@ -10,6 +10,7 @@ The browser encrypts note content and tab labels before anything is sent to the 
 - Password-based key derivation with `PBKDF2`
 - Encrypted tab labels and encrypted tab content
 - Explorer-style tab list
+- Local content-first search with grouped matches and tab-name matching
 - Realtime sync across open clients
 - Automatic exclusive editing per tab; other clients remain live readers
 - Password rotation with full re-encryption
@@ -62,6 +63,12 @@ Changes sync in batches scheduled within 200 ms, including during continuous typ
 Every save, rename, and deletion requires the current server-issued lock token. Password changes require ownership of every saved tab. Client clock differences do not decide whose content wins. After a disconnect or simultaneous lock attempt, any unsaved draft that cannot safely be applied is kept in a separate `(recovered)` tab.
 
 Restart the server and reload all open clients when deploying this protocol change. Older clients cannot write without a lock token.
+
+### Searching
+
+The Explorer search field searches unlocked tab contents and names within the current document. Matching is literal and case-insensitive. Results replace the tab list while a query is present, with occurrence counts and line snippets grouped by tab. Content matches appear before name-only matches. Each group initially shows three occurrences, with a control to expand the rest.
+
+Click a snippet to open its tab and scroll to the matching text. Matches have a subtle highlight in the editor, with the current result highlighted in amber. These highlights are visual only, not text selections, and do not move the caret within the current tab. The arrow controls (or Enter and Shift+Enter in the search field) cycle through content matches across tabs without moving focus into the editor. Clearing the search removes the highlights and restores the normal tab list without changing the open tab. Results update as local or remote content changes. Searching and navigating results do not acquire an editing lock; queries and results remain in browser memory and are cleared when the document locks.
 
 ## Storage Behavior
 

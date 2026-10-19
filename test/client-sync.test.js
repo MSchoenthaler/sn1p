@@ -7,7 +7,8 @@ import { test } from "node:test";
 import { createDocService } from "../lib/doc-service.js";
 import { removeDoc, withDocLock } from "../lib/doc-store.js";
 
-const source = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+const source = await readFile(new URL("../public/search.js", import.meta.url), "utf8") + "\n" +
+  await readFile(new URL("../public/app.js", import.meta.url), "utf8");
 const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
 async function until(check) {
   for (let i = 0; i < 600; i++) {
@@ -20,19 +21,34 @@ async function until(check) {
 // Minimal DOM with textarea assignment/selection behavior. Crypto, client code,
 // protocol handling, and file persistence are the production implementations.
 class Element {
+  constructor(ownerDocument = null) { this.ownerDocument = ownerDocument; }
+  dataset = {};
+  attributes = new Map();
   listeners = new Map();
   children = [];
   style = { setProperty() {} };
-  classList = { contains() { return false; }, toggle() {}, add() {} };
+  className = "";
+  classList = {
+    contains: (name) => this.className.split(/\s+/).includes(name),
+    toggle: (name, force) => {
+      const classes = new Set(this.className.split(/\s+/).filter(Boolean));
+      if (force ?? !classes.has(name)) classes.add(name); else classes.delete(name);
+      this.className = [...classes].join(" ");
+    },
+    add: (name) => this.classList.toggle(name, true)
+  };
   selectionStart = 0;
   selectionEnd = 0;
   selectionDirection = "none";
   scrollTop = 0;
   scrollLeft = 0;
   clientWidth = 800;
+  clientHeight = 600;
   _value = "";
   set value(value) { this._value = value; this.selectionStart = this.selectionEnd = value.length; }
   get value() { return this._value; }
+  set innerHTML(value) { this._innerHTML = value; this.children = []; }
+  get innerHTML() { return this._innerHTML || ""; }
   addEventListener(type, listener) {
     if (!this.listeners.has(type)) this.listeners.set(type, []);
     this.listeners.get(type).push(listener);
@@ -40,21 +56,32 @@ class Element {
   dispatch(type, event = {}) { for (const listener of this.listeners.get(type) || []) listener(event); }
   setRangeText(text, start, end) { this.value = this.value.slice(0, start) + text + this.value.slice(end); }
   setSelectionRange(start, end, direction = "none") { Object.assign(this, { selectionStart: start, selectionEnd: end, selectionDirection: direction }); }
-  setAttribute() {}
-  removeAttribute() {}
+  setAttribute(name, value) { this.attributes.set(name, value); }
+  getAttribute(name) { return this.attributes.get(name) ?? null; }
+  removeAttribute(name) { this.attributes.delete(name); }
   appendChild(child) { this.children.push(child); }
   replaceChildren(...children) { this.children = children; }
-  querySelector() { return null; }
-  focus() { this.dispatch("focus"); }
+  querySelector(selector) {
+    return selector.startsWith(".") ? descendants(this).find((el) => el.classList.contains(selector.slice(1))) || null : null;
+  }
+  getBoundingClientRect() { return { top: 0, left: 0, height: 21 }; }
+  scrollIntoView() {}
+  focus() {
+    if (this.ownerDocument) this.ownerDocument.activeElement = this;
+    this.dispatch("focus");
+  }
   select() {}
 }
 
 async function client(service, name, t, { legacyProtocol = false } = {}) {
   const elements = new Map();
   const element = (selector) => {
-    if (!elements.has(selector)) elements.set(selector, new Element());
+    if (!elements.has(selector)) elements.set(selector, new Element(document));
     return elements.get(selector);
   };
+  const document = { activeElement: null, querySelector: element, documentElement: new Element(), body: new Element(),
+    createElement: () => new Element(document), createDocumentFragment: () => new Element(document),
+    createTextNode: (text) => Object.assign(new Element(document), { textContent: text }), addEventListener() {} };
   const timers = new Set();
   const sockets = [];
   let ackDelay = 0;
@@ -92,8 +119,7 @@ async function client(service, name, t, { legacyProtocol = false } = {}) {
   const context = createContext({
     console, crypto: webcrypto, TextEncoder, TextDecoder, Uint8Array, btoa, atob,
     location: { pathname: `/${name}`, host: "localhost", protocol: "http:" },
-    document: { querySelector: element, documentElement: new Element(), body: new Element(),
-      createElement: () => new Element(), createDocumentFragment: () => new Element(), addEventListener() {} },
+    document,
     window: new Element(), localStorage: { getItem() { return null; }, setItem() {} },
     getComputedStyle: () => ({ lineHeight: "21", fontSize: "14" }),
     requestAnimationFrame() {},
@@ -114,6 +140,8 @@ async function client(service, name, t, { legacyProtocol = false } = {}) {
     status: () => statusEl.textContent
   };`, context);
   const api = context.api;
+  api.focused = () => document.activeElement;
+  api.element = element;
   api.delayAck = (delay) => { ackDelay = delay; };
   api.delayRelease = (delay) => { releaseDelay = delay; };
   t.after(() => {
@@ -144,6 +172,195 @@ function pressEditorKey(client, key = "Tab", options = {}) {
   client.editor.dispatch("keydown", event);
   return event.defaultPrevented;
 }
+
+function descendants(element) {
+  return element.children.flatMap((child) => [child, ...descendants(child)]);
+}
+
+function currentHighlight(client) {
+  return descendants(client.element("#editor-search-highlights")).find((el) => el.classList.contains("current"));
+}
+
+test("editor blur preserves the pressed tab through save and lock handoff", async (t) => {
+  const { a, b, tabId } = await pair(t);
+  a.addTab("other", "other text");
+  await a.upsertTabState("other");
+  await a.releaseTabEditing("other");
+  await until(() => b.state.tabs.has("other"));
+  const tabs = a.element("#tabs");
+  const target = tabs.children.find((el) => el.getAttribute("data-tab-id") === "other");
+  const addButton = tabs.children.find((el) => el.id === "add-tab");
+  assert.ok(target);
+  a.delayAck(50);
+  a.input("last edit before switching");
+
+  // Pointer-down blurs the editor before pointer-up dispatches the click.
+  a.editor.dispatch("blur");
+  await tick();
+  assert.ok(tabs.children.includes(target), "Blur must not detach the pressed tab");
+  assert.ok(tabs.children.includes(addButton), "Blur must not detach the add-tab button");
+  await until(() => !a.state.releasing.has(tabId));
+  assert.ok(tabs.children.includes(target), "Save/release acknowledgements must retain the click target");
+  target.onclick();
+  assert.equal(a.state.activeTabId, "other");
+  assert.equal(a.editor.value, "other text");
+  await until(() => b.state.tabs.get(tabId)?.text === "last edit before switching");
+});
+
+test("remote lock changes update tab controls without replacing their elements", async (t) => {
+  const { a, b, tabId } = await pair(t);
+  a.addTab("other", "other text");
+  await a.upsertTabState("other");
+  await until(() => b.state.tabs.has("other"));
+  const tabs = b.element("#tabs");
+  const target = tabs.children.find((el) => el.getAttribute("data-tab-id") === "other");
+  assert.ok(target.querySelector(".tab-edit").classList.contains("disabled"));
+  assert.ok(target.querySelector(".tab-close").classList.contains("disabled"));
+  await a.releaseTabEditing("other");
+  await until(() => !b.state.unavailableTabs.has("other"));
+  assert.ok(tabs.children.includes(target));
+  assert.equal(target.querySelector(".tab-edit").classList.contains("disabled"), false);
+  assert.equal(target.querySelector(".tab-close").classList.contains("disabled"), false);
+  const first = tabs.children.find((el) => el.getAttribute("data-tab-id") === tabId);
+  assert.ok(first.querySelector(".tab-close").classList.contains("disabled"));
+  await a.requestTabLock("other");
+  await until(() => b.state.unavailableTabs.has("other"));
+  assert.ok(tabs.children.includes(target));
+  assert.ok(target.querySelector(".tab-edit").classList.contains("disabled"));
+  await a.releaseTabEditing("other");
+});
+
+test("search navigation keeps focus in search until the user chooses the editor", async (t) => {
+  const { a, b, tabId } = await pair(t);
+  a.input("service one\nservice two");
+  await a.upsertTabState(tabId);
+  a.addTab("other", "service three");
+  await a.upsertTabState("other");
+  await a.releaseTabEditing("other");
+  await a.releaseTabEditing(tabId);
+  await until(() => b.state.tabs.has("other") && !b.editor.readOnly);
+  const input = b.element("#tab-search");
+  input.value = "service";
+  input.focus();
+  input.dispatch("input");
+
+  const navigate = async (shiftKey, expectedTab, start) => {
+    let prevented = false;
+    b.focused().dispatch("keydown", { key: "Enter", shiftKey, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    await tick();
+    assert.equal(b.focused(), input, "Navigating must not transfer focus to the editor");
+    assert.equal(b.state.activeTabId, expectedTab);
+    assert.equal(currentHighlight(b)?.dataset.start, String(start));
+    assert.equal(b.editor.selectionStart, b.editor.selectionEnd, "Search must not select editable text");
+  };
+  await navigate(false, tabId, 0);
+  await navigate(false, tabId, 12);
+  await navigate(false, "other", 0);
+  await navigate(false, tabId, 0);
+  await navigate(true, "other", 0);
+
+  for (const id of ["#search-next", "#search-previous"]) {
+    const control = b.element(id);
+    control.focus();
+    control.onclick();
+    await tick();
+    assert.equal(b.focused(), control);
+  }
+  const result = descendants(b.element("#search-results")).find((el) => el.className === "search-match");
+  result.focus();
+  await result.onclick();
+  assert.equal(b.focused().dataset.searchKey, result.dataset.searchKey);
+  assert.notEqual(b.focused(), b.editor);
+  assert.equal(b.state.tabs.get(tabId).text, "service one\nservice two");
+  assert.equal(b.state.tabs.get("other").text, "service three");
+  assert.equal(b.state.dirtyTabs.size, 0);
+  assert.equal(b.state.ownedLocks.size, 0);
+
+  b.editor.focus();
+  assert.equal(b.focused(), b.editor);
+  input.focus();
+  await b.switchTab("other");
+  assert.equal(b.focused(), b.editor, "Ordinary tab switches should still focus the editor");
+});
+
+test("search updates live, navigates read-only matches, and never claims ownership", async (t) => {
+  const { a, b, tabId } = await pair(t);
+  const input = b.element("#tab-search");
+  input.value = "service";
+  input.dispatch("input");
+  assert.equal(b.element("#search-summary").textContent, "0 matches in 0 tabs");
+  assert.equal(b.element("#tabs").hidden, true);
+  assert.equal(b.editor.value, "original");
+
+  a.input("service one\nservice two\nservice three\nservice four");
+  await a.upsertTabState(tabId);
+  await until(() => b.element("#search-summary").textContent === "4 matches in 1 tab");
+  const buttons = () => descendants(b.element("#search-results")).filter((el) => el.className === "search-match");
+  assert.equal(buttons().length, 3);
+  await buttons()[1].onclick();
+  assert.equal(currentHighlight(b)?.dataset.start, "12");
+  assert.equal(b.editor.selectionStart, b.editor.selectionEnd);
+  assert.equal(b.editor.readOnly, true);
+  assert.equal(b.element("#search-summary").textContent, "2 of 4 matches");
+  b.element("#search-next").onclick();
+  await until(() => currentHighlight(b)?.dataset.start === "24");
+  assert.equal(b.state.ownedLocks.size, 0);
+  assert.equal(b.state.dirtyTabs.size, 0);
+
+  await a.renameTabFlow(tabId, "Service notes");
+  a.input("No content matches remain");
+  await a.upsertTabState(tabId);
+  await until(() => b.element("#search-summary").textContent === "0 matches in 1 tab");
+  assert.equal(b.element("#search-next").disabled, true);
+  assert.equal(buttons().length, 0);
+  b.element("#search-clear").onclick();
+  assert.equal(b.element("#tabs").hidden, false);
+  assert.equal(b.element("#search-results").hidden, true);
+  assert.equal(input.value, "");
+  assert.equal(b.element("#editor-search-highlights").hidden, true);
+
+  input.value = "service";
+  input.dispatch("input");
+  await a.rotate();
+  await until(() => !b.state.key);
+  assert.equal(input.disabled, true);
+  assert.equal(input.value, "");
+  assert.equal(b.element("#search-results").hidden, true);
+  assert.equal(buttons().length, 0);
+  assert.equal(b.element("#editor-search-highlights").hidden, true);
+});
+
+test("search highlights preserve the caret and update without replacing matched text", async (t) => {
+  const { a, b, tabId } = await pair(t);
+  a.input("service one\nservice two", 3);
+  await a.upsertTabState(tabId);
+  const input = a.element("#tab-search");
+  input.value = "service";
+  input.focus();
+  input.dispatch("input");
+  input.dispatch("keydown", { key: "Enter", preventDefault() {} });
+  await until(() => currentHighlight(a)?.dataset.start === "0");
+  assert.equal(a.editor.selectionStart, 3);
+  assert.equal(a.editor.selectionEnd, 3);
+  const layer = a.element("#editor-search-highlights");
+  assert.equal(descendants(layer).filter((el) => el.classList.contains("editor-search-match")).length, 2);
+  a.editor.focus();
+  const caret = a.editor.selectionStart;
+  a.input(a.editor.value.slice(0, caret) + "X" + a.editor.value.slice(caret), caret + 1);
+  await a.upsertTabState(tabId);
+  await until(() => b.editor.value === "serXvice one\nservice two");
+  assert.equal(currentHighlight(a), undefined);
+  assert.equal(descendants(layer).filter((el) => el.classList.contains("editor-search-match")).length, 1);
+  a.editor.scrollTop = 70;
+  a.editor.scrollLeft = 25;
+  a.editor.dispatch("scroll");
+  assert.equal(layer.children[0].style.transform, "translate(-25px, -70px)");
+  input.value = "";
+  input.dispatch("input");
+  assert.equal(layer.hidden, true);
+  assert.equal(descendants(layer).filter((el) => el.classList.contains("editor-search-match")).length, 0);
+});
 
 test("Tab indentation preserves selection and scroll, saves, and reaches the other client", async (t) => {
   const { a, b, tabId } = await pair(t);

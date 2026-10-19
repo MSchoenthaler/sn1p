@@ -98,6 +98,7 @@ function applyTheme(theme) {
 }
 
 let renderedLineSignature = "";
+let renderedTabSignature = "";
 let lineMeasureEl = null;
 
 function getEditorLines() {
@@ -152,6 +153,7 @@ function measureWrappedLineHeight(line, lineHeight) {
 function syncLineNumberScroll() {
   if (!lineNumbers) return;
   lineNumbers.scrollTop = editor.scrollTop;
+  editorSearchHighlights.syncScroll();
 }
 
 function updateLineNumbers() {
@@ -184,6 +186,7 @@ function updateLineNumbers() {
     renderedLineSignature = signature;
   }
   syncLineNumberScroll();
+  updateSearchHighlights();
 }
 
 function setEditorValue(text) {
@@ -194,6 +197,7 @@ function setEditorValue(text) {
 function queueSaveForTab(tabId, text) {
   if (!tabId || !canEdit()) return;
   ensureLocalTabState(tabId, { text });
+  tabSearch.scheduleRefresh();
   if (!state.dirtyTabs.has(tabId)) state.editBases.set(tabId, entryVersion(getPersistedTabs()[tabId]));
   state.dirtyTabs.add(tabId);
   // Bound sync latency even when input never pauses. Idle ownership is separate.
@@ -254,6 +258,7 @@ function lockUI(locked) {
   }
   syncPasswordUI();
   if (!state.editingTabId || locked) renderTabs();
+  else syncTabLockControls();
   if (locked) {
     requestAnimationFrame(() => {
       if (passwordUnlockRow?.hidden) return;
@@ -347,6 +352,46 @@ const state = {
   editingTabId: null,
   dirtyTabs: new Set()
 };
+
+const editorSearchHighlights = createEditorSearchHighlights(editor, $("#editor-search-highlights"));
+
+function updateSearchHighlights() {
+  const { matches, selected } = tabSearch.getHighlights(state.activeTabId, editor.value);
+  editorSearchHighlights.update(matches, selected);
+}
+
+const tabSearch = createTabSearch({
+  onChange: updateSearchHighlights,
+  isUnlocked: () => !!state.key,
+  getTabs: () => getAllTabIds().map((id) => ({ id, name: state.tabs.get(id)?.name || "tab", text: state.tabs.get(id)?.text || "" })),
+  selectMatch: async (tabId, match) => {
+    if (!state.key || !state.tabs.has(tabId)) return;
+    if (state.activeTabId !== tabId) await switchTab(tabId, { focusEditor: false });
+    if (!match) return;
+    updateSearchHighlights();
+    syncLineMeasureStyles();
+    const measure = getLineMeasureEl();
+    measure.style.whiteSpace = editor.classList.contains("wrap-enabled") ? "pre-wrap" : "pre";
+    measure.textContent = editor.value.slice(0, match.start);
+    const marker = document.createElement("span");
+    marker.textContent = editor.value.slice(match.start, match.end);
+    measure.appendChild(marker);
+    const position = marker.getBoundingClientRect();
+    const origin = measure.getBoundingClientRect();
+    editor.scrollTop = Math.max(0, position.top - origin.top - editor.clientHeight / 2 + getEditorLineHeight());
+    editor.scrollLeft = Math.max(0, position.left - origin.left - editor.clientWidth / 2);
+    measure.textContent = "";
+    measure.style.whiteSpace = "";
+    syncLineNumberScroll();
+    // Mobile uses page scrolling as well as textarea scrolling.
+    const matchTop = editor.getBoundingClientRect().top + (Number.parseFloat(getComputedStyle(editor).paddingTop) || 0)
+      + position.top - origin.top - editor.scrollTop;
+    if (matchTop < $("header").getBoundingClientRect().bottom || matchTop + getEditorLineHeight() > window.innerHeight) {
+      window.scrollBy({ top: matchTop - window.innerHeight / 2, behavior: "instant" });
+    }
+  },
+  onError: reportSyncError
+});
 
 async function makeLocalKdf() {
   const salt = crypto.getRandomValues(new Uint8Array(16));
@@ -852,8 +897,28 @@ async function loadDoc() {
   renderActiveTab();
 }
 
+function syncTabLockControls() {
+  // Blur can release a lock between pointer-down and click. Keep tab nodes
+  // attached so that the pending click still reaches its original target.
+  for (const el of tabsEl.children) {
+    const tabId = el.getAttribute("data-tab-id");
+    if (!tabId) continue;
+    const disabled = !canEdit() || state.editingTabId === tabId || state.unavailableTabs.has(tabId);
+    el.querySelector(".tab-edit")?.classList.toggle("disabled", disabled);
+    el.querySelector(".tab-close")?.classList.toggle("disabled", disabled || isProtectedTab(tabId));
+  }
+}
+
 function renderTabs() {
+  tabSearch.refresh();
   const ids = getAllTabIds();
+  const signature = JSON.stringify([canEdit(), state.activeTabId, state.editingTabId,
+    state.pendingDeleteTabId, getInitialTabId(), ids.map((id) => [id, state.tabs.get(id)?.name])]);
+  if (signature === renderedTabSignature) {
+    syncTabLockControls();
+    return;
+  }
+  renderedTabSignature = signature;
   tabsEl.innerHTML = "";
 
   ids.forEach((tabId, index) => {
@@ -1358,6 +1423,7 @@ async function applyEncryptedTab(tabId, entry, options = {}) {
   if (!state.activeTabId) state.activeTabId = tabId;
   if (!getInitialTabId()) state.doc.meta.initialTabId = tabId;
   if (tabsChanged) renderTabs();
+  else tabSearch.scheduleRefresh();
 
   if (!options.fromSelf && tabId === state.activeTabId && state.key) {
     setStatus("Synced.", "status-ok");
@@ -1810,7 +1876,7 @@ editor.addEventListener("scroll", syncLineNumberScroll);
 
 window.addEventListener("resize", updateLineNumbers);
 
-async function switchTab(tabId) {
+async function switchTab(tabId, { focusEditor = true } = {}) {
   resetPendingDelete(false);
   cancelInlineRename(false);
   if (state.activeTabId !== tabId) releaseTabEditing(state.activeTabId).catch(reportSyncError);
@@ -1818,7 +1884,7 @@ async function switchTab(tabId) {
   renderTabs();
   renderActiveTab();
   lockUI(!state.key);
-  focusEditorAtEnd();
+  if (focusEditor) focusEditorAtEnd();
 }
 
 document.addEventListener("click", (ev) => {

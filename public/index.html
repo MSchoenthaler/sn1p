@@ -38,6 +38,16 @@
 <div class="workspace">
   <aside class="sidebar">
     <div class="sidebar-heading">Explorer</div>
+    <div class="search-field">
+      <input id="tab-search" type="search" placeholder="Search all tabs..." aria-label="Search tab contents and names" autocomplete="off" spellcheck="false" disabled />
+      <button id="search-clear" type="button" title="Clear search" aria-label="Clear search" hidden>&times;</button>
+    </div>
+    <div id="search-controls" class="search-controls" hidden>
+      <span id="search-summary" role="status" aria-live="polite"></span>
+      <button id="search-previous" type="button" title="Previous match" aria-label="Previous match">&uarr;</button>
+      <button id="search-next" type="button" title="Next match" aria-label="Next match">&darr;</button>
+    </div>
+    <div id="search-results" class="search-results" role="region" aria-label="Search results" hidden></div>
     <nav id="tabs" class="tabs"></nav>
   </aside>
 
@@ -46,6 +56,7 @@
     <div class="editor-shell">
       <div id="line-numbers" class="line-numbers" aria-hidden="true">1</div>
       <textarea id="editor" placeholder="Type here..." wrap="off"></textarea>
+      <div id="editor-search-highlights" aria-hidden="true" hidden></div>
     </div>
     <pre id="printable" class="printable"></pre>
   </main>
@@ -56,6 +67,7 @@
   <span id="editing-status" role="status" aria-live="polite"></span>
 </footer>
 
+<script src="/search.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>
