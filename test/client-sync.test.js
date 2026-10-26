@@ -495,6 +495,130 @@ test("Tab respects read-only, composition, modifiers, and Escape keyboard naviga
   await a.upsertTabState(a.state.activeTabId);
 });
 
+test("Enter carries indentation, replaces selections, and syncs without moving the caret", async (t) => {
+  const { a, b, tabId } = await pair(t);
+  const cases = [
+    { text: "  one", start: 5, end: 5, expected: "  one\n  ", caret: 8 },
+    { text: "    one", start: 7, end: 7, expected: "    one\n    ", caret: 12 },
+    { text: "\t  one", start: 6, end: 6, expected: "\t  one\n\t  ", caret: 10 },
+    { text: "  ", start: 2, end: 2, expected: "  \n  ", caret: 5 },
+    { text: "head\n  one two", start: 10, end: 10, expected: "head\n  one\n   two", caret: 13 },
+    { text: "    one", start: 2, end: 2, expected: "  \n    one", caret: 5 },
+    { text: "  one two", start: 5, end: 9, expected: "  one\n  ", caret: 8 },
+    { text: "  one\n    two", start: 5, end: 10, expected: "  one\n  two", caret: 8 },
+  ];
+  for (const c of cases) {
+    a.input(c.text);
+    a.editor.setSelectionRange(c.start, c.end, "backward");
+    assert.equal(pressEditorKey(a, "Enter"), true);
+    assert.equal(a.editor.value, c.expected);
+    assert.deepEqual([a.editor.selectionStart, a.editor.selectionEnd], [c.caret, c.caret]);
+    await a.upsertTabState(tabId);
+    await until(() => b.editor.value === c.expected);
+    assert.equal(a.editor.selectionStart, c.caret);
+  }
+  pressEditorKey(a, "Enter", { shiftKey: true });
+  assert.equal(a.editor.value, "  one\n  \n  two");
+  await a.upsertTabState(tabId);
+});
+
+test("Enter leaves unindented lines, modifiers, composition, and read-only content alone", async (t) => {
+  const { a, b, tabId } = await pair(t);
+  assert.equal(pressEditorKey(b, "Enter"), false);
+  assert.equal(b.editor.value, "original");
+  for (const text of ["", "one", "\none"]) {
+    a.input(text);
+    assert.equal(pressEditorKey(a, "Enter"), false);
+    assert.equal(a.editor.value, text);
+  }
+  a.input("  one");
+  for (const options of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { isComposing: true }]) {
+    assert.equal(pressEditorKey(a, "Enter", options), false);
+  }
+  a.editor.dispatch("compositionstart");
+  assert.equal(pressEditorKey(a, "Enter"), false);
+  a.editor.dispatch("compositionend");
+  assert.equal(a.editor.value, "  one");
+  a.editor.setSelectionRange(0, 0);
+  assert.equal(pressEditorKey(a, "Enter"), false);
+  await a.upsertTabState(tabId);
+});
+
+test("newline input events carry indentation without intercepting pastes or composition", async (t) => {
+  const { a, tabId } = await pair(t);
+  for (const inputType of ["insertLineBreak", "insertParagraph"]) {
+    a.input("  one");
+    let prevented = false;
+    a.editor.dispatch("beforeinput", { inputType, cancelable: true,
+      preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(a.editor.value, "  one\n  ");
+    assert.equal(a.editor.selectionStart, 8);
+  }
+  for (const options of [{ inputType: "insertFromPaste" },
+    { inputType: "insertLineBreak", isComposing: true },
+    { inputType: "insertLineBreak", cancelable: false }]) {
+    a.input("  one");
+    let prevented = false;
+    a.editor.dispatch("beforeinput", { preventDefault() { prevented = true; }, ...options });
+    assert.equal(prevented, false);
+    assert.equal(a.editor.value, "  one");
+  }
+  await a.upsertTabState(tabId);
+});
+
+test("Home toggles indentation and line start without editing or claiming a lock", async (t) => {
+  const { a, b, tabId } = await pair(t);
+  const text = "header\n  one\n\t  two\n    \nplain\n";
+  a.input(text);
+  await a.upsertTabState(tabId);
+  await until(() => b.editor.value === text);
+  assert.equal(b.editor.readOnly, true);
+  for (const [initial, targets] of [
+    [12, [9, 7, 9]], [8, [9, 7]], [19, [16, 13, 16]],
+    [24, [20, 20]], [30, [25, 25]], [31, [31, 31]],
+  ]) {
+    b.editor.setSelectionRange(initial, initial);
+    for (const target of targets) {
+      assert.equal(pressEditorKey(b, "Home"), true);
+      assert.deepEqual([b.editor.selectionStart, b.editor.selectionEnd], [target, target]);
+    }
+  }
+  assert.equal(b.editor.value, text);
+  assert.equal(b.state.dirtyTabs.size, 0);
+  assert.equal(b.state.ownedLocks.size, 0);
+});
+
+test("Shift+Home preserves the anchor across forward and backward selections", async (t) => {
+  const { a, tabId } = await pair(t);
+  a.input("header\n  one\n  two");
+  await a.upsertTabState(tabId);
+  for (const [start, end, direction, expected] of [
+    [12, 12, "none", [9, 12, "backward"]],
+    [9, 12, "backward", [7, 12, "backward"]],
+    [7, 12, "backward", [9, 12, "backward"]],
+    [2, 18, "forward", [2, 15, "forward"]],
+    [9, 18, "backward", [7, 18, "backward"]],
+    [8, 8, "none", [8, 9, "forward"]],
+  ]) {
+    a.editor.setSelectionRange(start, end, direction);
+    assert.equal(pressEditorKey(a, "Home", { shiftKey: true }), true);
+    assert.deepEqual([a.editor.selectionStart, a.editor.selectionEnd, a.editor.selectionDirection], expected);
+  }
+  a.editor.setSelectionRange(9, 18, "backward");
+  pressEditorKey(a, "Home");
+  assert.deepEqual([a.editor.selectionStart, a.editor.selectionEnd], [7, 7]);
+  for (const options of [{ ctrlKey: true }, { metaKey: true }, { altKey: true }, { isComposing: true }]) {
+    a.editor.setSelectionRange(12, 12);
+    assert.equal(pressEditorKey(a, "Home", options), false);
+    assert.equal(a.editor.selectionStart, 12);
+  }
+  a.editor.dispatch("compositionstart");
+  assert.equal(pressEditorKey(a, "Home"), false);
+  a.editor.dispatch("compositionend");
+  assert.equal(a.state.dirtyTabs.size, 0);
+});
+
 test("two open clients: reader sees edits, caret survives acks, debounce releases ownership", async (t) => {
   const { a, b, tabId } = await pair(t);
   assert.equal(b.editor.readOnly, true);

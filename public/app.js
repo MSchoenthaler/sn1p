@@ -1873,17 +1873,83 @@ function indentEditor(outdent) {
   handleEditorInput();
 }
 
+function insertIndentedNewline(event) {
+  if (event.cancelable === false || event.isComposing || state.composingTabId ||
+      editor.readOnly || !canEditTab(state.activeTabId)) return;
+  const { value, selectionStart: start, selectionEnd: end } = editor;
+  const lineStart = value.slice(0, start).lastIndexOf("\n") + 1;
+  const indent = value.slice(lineStart, start).match(/^[ \t]*/)[0];
+  if (!indent) return;
+
+  event.preventDefault();
+  const replacement = "\n" + indent;
+  let inserted = false;
+  try { inserted = document.execCommand?.("insertText", false, replacement); } catch {}
+  if (!inserted) editor.setRangeText(replacement, start, end);
+  const caret = start + replacement.length;
+  editor.setSelectionRange(caret, caret);
+  handleEditorInput();
+}
+
+function moveToSmartHome(extendSelection) {
+  const { value, selectionStart: start, selectionEnd: end, selectionDirection } = editor;
+  const head = selectionDirection === "backward" ? start : end;
+  const anchor = selectionDirection === "backward" ? end : start;
+  const lineStart = value.slice(0, head).lastIndexOf("\n") + 1;
+  const lineEnd = value.indexOf("\n", lineStart);
+  const line = value.slice(lineStart, lineEnd === -1 ? value.length : lineEnd);
+  const indentation = line.match(/^[ \t]*/)[0].length;
+  const contentStart = lineStart + (indentation === line.length ? 0 : indentation);
+  const target = head === contentStart ? lineStart : contentStart;
+  if (extendSelection) {
+    editor.setSelectionRange(Math.min(anchor, target), Math.max(anchor, target), target < anchor ? "backward" : "forward");
+  } else {
+    editor.setSelectionRange(target, target);
+  }
+  // Textarea selection changes do not automatically reveal the new caret.
+  syncLineMeasureStyles();
+  const measure = getLineMeasureEl();
+  measure.style.whiteSpace = editor.classList.contains("wrap-enabled") ? "pre-wrap" : "pre";
+  measure.textContent = value.slice(0, target);
+  const marker = document.createElement("span");
+  marker.textContent = value.slice(target, target + 1) || " ";
+  measure.appendChild(marker);
+  const position = marker.getBoundingClientRect();
+  const origin = measure.getBoundingClientRect();
+  const top = position.top - origin.top;
+  const lineHeight = getEditorLineHeight();
+  const style = getComputedStyle(editor);
+  const height = editor.clientHeight - (Number.parseFloat(style.paddingTop) || 0) - (Number.parseFloat(style.paddingBottom) || 0);
+  editor.scrollLeft = Math.max(0, position.left - origin.left - getEditorContentWidth() + lineHeight);
+  if (top < editor.scrollTop) editor.scrollTop = top;
+  else if (top + lineHeight > editor.scrollTop + height) editor.scrollTop = Math.max(0, top + lineHeight - height);
+  measure.textContent = "";
+  measure.style.whiteSpace = "";
+  syncLineNumberScroll();
+}
+
 let allowTabNavigation = false;
 editor.addEventListener("keydown", (event) => {
   const navigate = allowTabNavigation;
   allowTabNavigation = event.key === "Escape";
-  if (event.key !== "Tab" || navigate || event.ctrlKey || event.metaKey || event.altKey ||
-      event.isComposing || state.composingTabId || editor.readOnly || !canEditTab(state.activeTabId)) return;
+  if (event.ctrlKey || event.metaKey || event.altKey ||
+      event.isComposing || state.composingTabId) return;
+  if (event.key === "Home") {
+    event.preventDefault();
+    moveToSmartHome(event.shiftKey);
+    return;
+  }
+  if (editor.readOnly || !canEditTab(state.activeTabId)) return;
+  if (event.key === "Enter") return insertIndentedNewline(event);
+  if (event.key !== "Tab" || navigate) return;
   event.preventDefault();
   indentEditor(event.shiftKey);
 });
 editor.addEventListener("blur", () => { allowTabNavigation = false; });
 editor.addEventListener("input", handleEditorInput);
+editor.addEventListener("beforeinput", (event) => {
+  if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") insertIndentedNewline(event);
+});
 
 editor.addEventListener("compositionstart", () => { state.composingTabId = state.activeTabId; });
 editor.addEventListener("compositionend", () => {

@@ -211,6 +211,8 @@ Example:
 ## Notes
 
 - In the editor, Tab inserts two spaces at the caret or indents every selected line by two spaces. Shift+Tab removes up to two leading spaces (or one existing tab character) from each affected line. A selection ending at the start of a line leaves that line unchanged.
+- Enter carries the current line's leading spaces or tabs onto the next line. When splitting within the indentation, only the whitespace before the caret is carried forward. Pasted text is unchanged.
+- Home toggles between the first non-whitespace character and the start of the logical line. Shift+Home extends the selection to the same positions. Ctrl/Cmd+Home keeps its normal behavior; blank lines go to column zero.
 - Press Escape, then Tab (or Shift+Tab), to move keyboard focus out of the editor. Read-only editors retain normal Tab navigation.
 - The wrap mode toggle is a local browser preference and is remembered with `localStorage`.
 - Spellcheck is off by default. The upper-right spellcheck toggle enables it for the editor and remembers the preference in `localStorage` for this browser across notes and reloads; it does not change other clients' preferences.
