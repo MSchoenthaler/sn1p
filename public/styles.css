@@ -410,7 +410,6 @@ button:disabled {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  pointer-events: none;
 }
 
 .tab-rename-input {
@@ -435,7 +434,7 @@ button:disabled {
   border-color: var(--tab-input-border);
 }
 
-.tab-edit,
+.tab-menu-toggle,
 .tab-close {
   flex: 0 0 auto;
   opacity: 0.9;
@@ -444,11 +443,11 @@ button:disabled {
   line-height: 0;
 }
 
-.tab-edit {
+.tab-menu-toggle {
   color: var(--tab-icon);
 }
 
-.tab-edit svg,
+.tab-menu-toggle svg,
 .tab-close svg {
   width: 1.25rem;
   height: 1.25rem;
@@ -652,12 +651,12 @@ footer {
   color: var(--tab-delete-armed);
 }
 
-.tab-edit:hover,
+.tab-menu-toggle:hover,
 .tab-close:hover {
   opacity: 1;
 }
 
-.tab-edit.disabled,
+.tab-menu-toggle.disabled,
 .tab-close.disabled {
   color: var(--tab-icon-disabled);
   opacity: 0.5;
@@ -727,3 +726,40 @@ footer {
     min-height: 50vh;
   }
 }
+
+/* Keep tab selection and the menu trigger independently keyboard accessible. */
+.tab-label, .tab-menu-toggle {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  box-shadow: none;
+  font: inherit;
+  color: inherit;
+  text-align: left;
+  letter-spacing: inherit;
+}
+.tab-menu-toggle { color: var(--tab-icon); }
+.tab-menu {
+  position: fixed;
+  z-index: 100;
+  padding: 0.3rem;
+  min-width: 10rem;
+  border: 1px solid var(--sidebar-border);
+  border-radius: 0.45rem;
+  background: var(--sidebar-bg);
+  box-shadow: 0 4px 16px #0004;
+}
+.tab-menu button {
+  display: block;
+  width: 100%;
+  padding: 0.5rem 0.65rem;
+  border: 0;
+  background: transparent;
+  color: var(--text-body);
+  text-align: left;
+  box-shadow: none;
+}
+.tab-menu button:hover, .tab-menu button:focus-visible { background: var(--tab-hover-bg); }
+.tab-menu button:disabled { opacity: 0.5; cursor: not-allowed; }

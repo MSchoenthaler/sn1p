@@ -24,12 +24,10 @@ const passwordChangePanel = $("#password-change-panel");
 const statusEl = $("#status");
 const editingStatusEl = $("#editing-status");
 const tabsEl = $("#tabs");
-const EDIT_ICON = `
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" aria-hidden="true">
-  <g fill="currentColor" fill-rule="evenodd" clip-rule="evenodd">
-    <path d="M11.32 6.176H5c-1.105 0-2 .949-2 2.118v10.588C3 20.052 3.895 21 5 21h11c1.105 0 2-.948 2-2.118v-7.75l-3.914 4.144A2.46 2.46 0 0 1 12.81 16l-2.681.568c-1.75.37-3.292-1.263-2.942-3.115l.536-2.839c.097-.512.335-.983.684-1.352z" />
-    <path d="M19.846 4.318a2.2 2.2 0 0 0-.437-.692a2 2 0 0 0-.654-.463a1.92 1.92 0 0 0-1.544 0a2 2 0 0 0-.654.463l-.546.578l2.852 3.02l.546-.579a2.1 2.1 0 0 0 .437-.692a2.24 2.24 0 0 0 0-1.635M17.45 8.721L14.597 5.7L9.82 10.76a.54.54 0 0 0-.137.27l-.536 2.84c-.07.37.239.696.588.622l2.682-.567a.5.5 0 0 0 .255-.145l4.778-5.06Z" />
-  </g>
+const MENU_ICON = `
+<svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24" aria-hidden="true">
+  <path d="M0 0h24v24H0z" fill="none" />
+  <path fill="currentColor" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M6.1 12a1.23 1.23 0 1 1-2.46 0a1.23 1.23 0 0 1 2.46 0m7.13 0a1.23 1.23 0 1 1-2.46 0a1.23 1.23 0 0 1 2.46 0m7.13 0a1.23 1.23 0 1 1-2.46 0a1.23 1.23 0 0 1 2.46 0" />
 </svg>`;
 const DELETE_ICON = `
 <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24">
@@ -830,7 +828,8 @@ function startInlineRename(tabId) {
     return;
   }
   const tab = state.tabs.get(tabId);
-  if (!tab) return;
+  if (!tab || state.unavailableTabs.has(tabId)) return;
+  closeTabMenu();
   resetPendingDelete(false);
   state.editingTabId = tabId;
   renderTabs();
@@ -917,6 +916,73 @@ async function loadDoc() {
   renderActiveTab();
 }
 
+let openTabMenu = null;
+
+function closeTabMenu(restoreFocus = false) {
+  if (!openTabMenu) return;
+  const { menu, trigger } = openTabMenu;
+  menu.remove();
+  trigger.setAttribute("aria-expanded", "false");
+  openTabMenu = null;
+  if (restoreFocus) trigger.focus();
+}
+
+function downloadTab(tabId) {
+  if (!canEdit() || !state.tabs.has(tabId)) return;
+  const name = (state.tabs.get(tabId).name || "tab")
+    .replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "") || "tab";
+  const blob = new Blob([getTabText(tabId)], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = /\.txt$/i.test(name) ? name : `${name}.txt`;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function toggleTabMenu(tabId, trigger) {
+  const wasOpen = openTabMenu?.trigger === trigger;
+  closeTabMenu();
+  if (wasOpen || !canEdit()) return;
+  const menu = document.createElement("div");
+  menu.className = "tab-menu";
+  menu.setAttribute("role", "menu");
+  menu.setAttribute("aria-label", "Tab actions");
+  const rename = document.createElement("button");
+  rename.type = "button";
+  rename.textContent = "Rename";
+  rename.disabled = state.unavailableTabs.has(tabId);
+  const download = document.createElement("button");
+  download.type = "button";
+  download.textContent = "Download as .txt";
+  download.title = "Downloads an unencrypted text file";
+  for (const item of [rename, download]) {
+    item.setAttribute("role", "menuitem");
+    menu.appendChild(item);
+  }
+  rename.onclick = () => { closeTabMenu(); startInlineRename(tabId); };
+  download.onclick = () => { closeTabMenu(true); downloadTab(tabId); };
+  menu.onkeydown = (event) => {
+    const items = [rename, download].filter((item) => !item.disabled);
+    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const index = items.indexOf(document.activeElement);
+      const next = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+        : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+      items[next].focus();
+    }
+  };
+  document.body.appendChild(menu);
+  const rect = trigger.getBoundingClientRect();
+  menu.style.left = `${Math.max(8, Math.min(rect.left, window.innerWidth - menu.offsetWidth - 8))}px`;
+  menu.style.top = `${Math.max(8, Math.min(rect.bottom + 4, window.innerHeight - menu.offsetHeight - 8))}px`;
+  trigger.setAttribute("aria-expanded", "true");
+  openTabMenu = { menu, trigger, tabId, rename };
+  (rename.disabled ? download : rename).focus();
+}
+
 function syncTabLockControls() {
   // Blur can release a lock between pointer-down and click. Keep tab nodes
   // attached so that the pending click still reaches its original target.
@@ -924,7 +990,10 @@ function syncTabLockControls() {
     const tabId = el.getAttribute("data-tab-id");
     if (!tabId) continue;
     const disabled = !canEdit() || state.editingTabId === tabId || state.unavailableTabs.has(tabId);
-    el.querySelector(".tab-edit")?.classList.toggle("disabled", disabled);
+    el.classList.toggle("active", tabId === state.activeTabId);
+    const trigger = el.querySelector(".tab-menu-toggle");
+    if (trigger) trigger.disabled = !canEdit() || state.editingTabId === tabId;
+    if (openTabMenu?.tabId === tabId) openTabMenu.rename.disabled = disabled;
     el.querySelector(".tab-close")?.classList.toggle("disabled", disabled || isProtectedTab(tabId));
   }
 }
@@ -932,12 +1001,13 @@ function syncTabLockControls() {
 function renderTabs() {
   tabSearch.refresh();
   const ids = getAllTabIds();
-  const signature = JSON.stringify([canEdit(), state.activeTabId, state.editingTabId,
+  const signature = JSON.stringify([canEdit(), state.editingTabId,
     state.pendingDeleteTabId, getInitialTabId(), ids.map((id) => [id, state.tabs.get(id)?.name])]);
   if (signature === renderedTabSignature) {
     syncTabLockControls();
     return;
   }
+  closeTabMenu();
   renderedTabSignature = signature;
   tabsEl.innerHTML = "";
 
@@ -948,12 +1018,12 @@ function renderTabs() {
     const armedDelete = state.pendingDeleteTabId === tabId;
     const isEditing = state.editingTabId === tabId;
 
-    const el = document.createElement(isEditing ? "div" : "button");
+    const el = document.createElement("div");
     el.className = "tab" + (tabId === state.activeTabId ? " active" : "");
     if (isEditing) el.className += " editing";
     if (!canEdit()) el.className += " disabled";
     el.setAttribute("data-tab-id", tabId);
-    if (!isEditing) el.type = "button";
+
 
     if (isEditing) {
       const input = document.createElement("input");
@@ -985,24 +1055,29 @@ function renderTabs() {
       };
       el.appendChild(input);
     } else {
-      const label = document.createElement("span");
+      const label = document.createElement("button");
+      label.type = "button";
       label.className = "tab-label";
+      label.ondblclick = (event) => { event.stopPropagation(); startInlineRename(tabId); };
       label.textContent = labelText;
       label.title = labelText;
       el.appendChild(label);
     }
 
-    const edit = document.createElement("span");
-    edit.className = "tab-edit";
-    edit.innerHTML = EDIT_ICON;
-    edit.title = isEditing ? "Finish renaming" : "Rename tab";
-    if (!canEdit() || isEditing || state.unavailableTabs.has(tabId)) edit.classList.add("disabled");
-    edit.onclick = (ev) => {
-      ev.stopPropagation();
-      if (!canEdit() || edit.classList.contains("disabled")) return;
-      startInlineRename(tabId);
+    const menuToggle = document.createElement("button");
+    menuToggle.type = "button";
+    menuToggle.className = "tab-menu-toggle";
+    menuToggle.innerHTML = MENU_ICON;
+    menuToggle.title = "Tab actions";
+    menuToggle.setAttribute("aria-label", `Actions for ${labelText}`);
+    menuToggle.setAttribute("aria-haspopup", "menu");
+    menuToggle.setAttribute("aria-expanded", "false");
+    menuToggle.disabled = !canEdit() || isEditing;
+    menuToggle.onclick = (event) => {
+      event.stopPropagation();
+      toggleTabMenu(tabId, menuToggle);
     };
-    el.appendChild(edit);
+    el.appendChild(menuToggle);
 
     const close = document.createElement("span");
     close.className = "tab-close";
@@ -1980,13 +2055,15 @@ async function switchTab(tabId, { focusEditor = true } = {}) {
 }
 
 document.addEventListener("click", (ev) => {
+  if (!ev.target.closest(".tab-menu") && !ev.target.closest(".tab-menu-toggle")) closeTabMenu();
   if (ev.target.closest("#add-tab")) return;
   if (ev.target.closest(".tab-close")) return;
   resetPendingDelete();
 });
 
 document.addEventListener("keydown", (ev) => {
-  if (ev.key === "Escape") resetPendingDelete();
+  if (ev.key === "Escape") { closeTabMenu(true); resetPendingDelete(); }
+  if (ev.key === "Tab") closeTabMenu(true);
 });
 
 applyTheme(getThemePreference());
@@ -1999,3 +2076,6 @@ loadDoc()
     console.error(err);
     setStatus(err?.message || "Failed to load document.", "status-err");
   });
+
+window.addEventListener("resize", () => closeTabMenu());
+document.addEventListener("scroll", () => closeTabMenu(), true);

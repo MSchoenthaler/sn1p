@@ -257,19 +257,19 @@ test("remote lock changes update tab controls without replacing their elements",
   await until(() => b.state.tabs.has("other"));
   const tabs = b.element("#tabs");
   const target = tabs.children.find((el) => el.getAttribute("data-tab-id") === "other");
-  assert.ok(target.querySelector(".tab-edit").classList.contains("disabled"));
+  assert.equal(target.querySelector(".tab-menu-toggle").disabled, false);
   assert.ok(target.querySelector(".tab-close").classList.contains("disabled"));
   await a.releaseTabEditing("other");
   await until(() => !b.state.unavailableTabs.has("other"));
   assert.ok(tabs.children.includes(target));
-  assert.equal(target.querySelector(".tab-edit").classList.contains("disabled"), false);
+  assert.equal(target.querySelector(".tab-menu-toggle").disabled, false);
   assert.equal(target.querySelector(".tab-close").classList.contains("disabled"), false);
   const first = tabs.children.find((el) => el.getAttribute("data-tab-id") === tabId);
   assert.ok(first.querySelector(".tab-close").classList.contains("disabled"));
   await a.requestTabLock("other");
   await until(() => b.state.unavailableTabs.has("other"));
   assert.ok(tabs.children.includes(target));
-  assert.ok(target.querySelector(".tab-edit").classList.contains("disabled"));
+  assert.equal(target.querySelector(".tab-menu-toggle").disabled, false);
   await a.releaseTabEditing("other");
 });
 
