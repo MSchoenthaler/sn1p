@@ -2066,6 +2066,95 @@ document.addEventListener("keydown", (ev) => {
   if (ev.key === "Tab") closeTabMenu(true);
 });
 
+function initializeSidebarResize() {
+  const workspace = $(".workspace");
+  const divider = $("#sidebar-resizer");
+  const storageKey = "sn1p-sidebar-width";
+  let preferredWidth = 260;
+  let drag = null;
+  let frame = null;
+  try {
+    const saved = Number(localStorage.getItem(storageKey));
+    if (Number.isFinite(saved) && saved > 0) preferredWidth = saved;
+  } catch { /* Keep the default when browser storage is unavailable. */ }
+
+  const isDesktop = () => window.innerWidth > 860;
+  const maximumWidth = () => Math.max(200, Math.min(600, workspace.clientWidth - 360));
+  const clamp = (width) => Math.round(Math.max(200, Math.min(maximumWidth(), width)));
+  function applyWidth() {
+    if (!isDesktop()) return;
+    const width = clamp(preferredWidth);
+    workspace.style.setProperty("--sidebar-width", `${width}px`);
+    divider.setAttribute("aria-valuemin", "200");
+    divider.setAttribute("aria-valuemax", String(maximumWidth()));
+    divider.setAttribute("aria-valuenow", String(width));
+    divider.setAttribute("aria-valuetext", `${width} pixels`);
+    if (frame === null) {
+      frame = requestAnimationFrame(() => {
+        frame = null;
+        updateLineNumbers();
+      });
+    }
+  }
+  function saveWidth() {
+    try { localStorage.setItem(storageKey, String(preferredWidth)); }
+    catch { /* Resizing still works without persistent storage. */ }
+  }
+  function finishDrag(event) {
+    if (!drag || (event && event.pointerId !== drag.pointerId)) return;
+    const pointerId = drag.pointerId;
+    drag = null;
+    document.body.classList.remove("sidebar-resizing");
+    if (document.activeElement === divider) divider.blur();
+    if (divider.hasPointerCapture(pointerId)) divider.releasePointerCapture(pointerId);
+    saveWidth();
+  }
+  divider.addEventListener("pointerdown", (event) => {
+    if (!isDesktop() || event.button !== 0 || drag) return;
+    event.preventDefault();
+    closeTabMenu();
+    divider.focus();
+    drag = { pointerId: event.pointerId, x: event.clientX, width: clamp(preferredWidth) };
+    divider.setPointerCapture(event.pointerId);
+    document.body.classList.add("sidebar-resizing");
+  });
+  divider.addEventListener("pointermove", (event) => {
+    if (!drag || event.pointerId !== drag.pointerId) return;
+    if (!(event.buttons & 1)) {
+      finishDrag(event);
+      return;
+    }
+    preferredWidth = clamp(drag.width + event.clientX - drag.x);
+    applyWidth();
+  });
+  for (const eventName of ["pointerup", "pointercancel", "lostpointercapture"]) {
+    divider.addEventListener(eventName, finishDrag);
+  }
+  divider.addEventListener("keydown", (event) => {
+    if (!isDesktop() || event.altKey || event.ctrlKey || event.metaKey) return;
+    const step = event.shiftKey ? 50 : 10;
+    const widths = {
+      ArrowLeft: clamp(preferredWidth) - step,
+      ArrowRight: clamp(preferredWidth) + step,
+      Home: 200,
+      End: maximumWidth(),
+    };
+    if (!(event.key in widths)) return;
+    event.preventDefault();
+    closeTabMenu();
+    preferredWidth = clamp(widths[event.key]);
+    applyWidth();
+    saveWidth();
+  });
+  window.addEventListener("resize", () => {
+    finishDrag();
+    applyWidth();
+  });
+  window.addEventListener("blur", () => finishDrag());
+  applyWidth();
+}
+
+initializeSidebarResize();
 applyTheme(getThemePreference());
 applyWrapMode(isWrapEnabled());
 applySpellcheck(localStorage.getItem(SPELLCHECK_STORAGE_KEY) === "1");

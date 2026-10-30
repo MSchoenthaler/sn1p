@@ -215,6 +215,7 @@ Example:
 - Home toggles between the first non-whitespace character and the start of the logical line. Shift+Home extends the selection to the same positions. Ctrl/Cmd+Home keeps its normal behavior; blank lines go to column zero.
 - Press Escape, then Tab (or Shift+Tab), to move keyboard focus out of the editor. Read-only editors retain normal Tab navigation.
 - The wrap mode toggle is a local browser preference and is remembered with `localStorage`.
+- Drag the Explorer's right edge to resize it on desktop. Its width is remembered in this browser across notes and reloads. Focus the divider to use Left/Right arrows (Shift for larger steps), or Home/End for the minimum/maximum width. Narrow screens keep the stacked layout without changing the saved desktop width.
 - Spellcheck is off by default. The upper-right spellcheck toggle enables it for the editor and remembers the preference in `localStorage` for this browser across notes and reloads; it does not change other clients' preferences.
 - The editor focuses at the end after unlock and tab switches without inserting text into a shared note.
 - The UI is intentionally file-free from the user perspective; import/export has been removed.
